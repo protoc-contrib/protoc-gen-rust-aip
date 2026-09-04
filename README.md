@@ -48,33 +48,30 @@ which is fail-closed. A second copy in the schema was tried in the Go
 predecessor and removed — it could only drift out of agreement with the one
 that is actually enforced.
 
-### Field behavior and field masks — generated, not reflective
+### Field behavior: clearing is generated, validating need not be
 
-This is where the Rust plugin does **more** than the Go one.
-
-`buffa`'s reflection is bridge mode: it encodes the message and decodes it
-into a `DynamicMessage`, a full serialize/deserialize round trip per access.
-Go's `protoreflect` offers direct field access, so aip-go could afford to walk
-messages at runtime. Here, emit the walk instead:
+Emit the OUTPUT_ONLY walk. Not as an optimisation — buffa 0.9.1 has **no
+reflective path to mutation in any mode**. `Reflectable` exposes only
+`reflect(&self)`, and the source marks `reflect_mut` as designed but deferred
+to the MergeSink work. `ReflectMessage::clear()` exists, but reaching it needs
+a `&mut dyn ReflectMessage` that nothing produces.
 
 ```rust
 impl Collection {
     /// Clears every field annotated OUTPUT_ONLY.
     fn clear_output_only(&mut self) { self.create_time = None; /* ... */ }
-
-    /// Errors if a field annotated REQUIRED has no value.
-    fn validate_required(&self) -> Result<(), Error> { /* explicit checks */ }
-}
-
-impl UpdateCollectionRequest {
-    /// Errors if update_mask names a path that is not a field of Collection.
-    fn validate_field_mask(&self) -> Result<(), Error> { /* static path match */ }
 }
 ```
 
-Direct field access, no reflection, no round trips. Field-mask validation
-becomes a match against a path list the plugin already knows at codegen time,
-so it needs no descriptor lookup at runtime either.
+Reads are a genuine choice. Validating REQUIRED fields and checking
+update_mask paths are read-only, so aip-rs can do them reflectively the way
+aip-go does. Generating them is also reasonable — field-mask validation
+becomes a match against a path list known at codegen time, needing no
+descriptor lookup at all — but it is a size-versus-runtime tradeoff rather
+than a constraint. Prefer the runtime unless it measures badly, so the two
+implementations stay structurally comparable.
+
+Revisit the whole split if a buffa release lands `reflect_mut`.
 
 Two semantics worth carrying over from aip-go, because both were bugs there
 first:
