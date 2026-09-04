@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
+
+      - name: Check Formatting
+        run: nix develop --command cargo fmt --all --check
+
+      # The fixture crate denies the same lint groups the plugin does, so this
+      # lints the generated code as a consumer sees it, not only the generator.
+      - name: Lint
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Tests
+        run: nix develop --command cargo test --workspace
+
+  release:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    timeout-minutes: 15
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create Release PR
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          manifest-file: .github/config/release-please-manifest.json
+          config-file: .github/config/release-please-config.json
+          target-branch: main
+
+  build:
+    needs: release
+    if: ${{ needs.release.outputs.release_created }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            nix_system: x86_64-linux
+          - os: macos-15
+            nix_system: aarch64-darwin
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
+
+      - name: Build with Nix
+        run: nix build . --system ${{ matrix.nix_system }}
+
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p release && install -m 0755 result/bin/protoc-gen-rust-aip \
+            release/protoc-gen-rust-aip-${{ matrix.nix_system }}
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.release.outputs.tag_name }}
+          files: release/protoc-gen-rust-aip-${{ matrix.nix_system }}
+
+  publish:
+    needs: [release, build]
+    if: ${{ needs.release.outputs.release_created }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
+
+      - name: Authenticate with Crates.io
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish to Crates.io
+        run: nix develop --command cargo publish --package protoc-gen-rust-aip
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

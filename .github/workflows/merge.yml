@@ -1,0 +1,26 @@
+name: Auto Merge
+
+on:
+  pull_request:
+    types: [opened, reopened, labeled, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  merge:
+    if: contains(github.event.pull_request.labels.*.name, 'auto-merge')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    timeout-minutes: 5
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL" || echo "PR approval skipped or failed."
+          gh pr merge --auto --squash "$PR_URL"

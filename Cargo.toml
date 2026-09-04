@@ -3,11 +3,12 @@ members = ["tests/fixture"]
 
 [package]
 name = "protoc-gen-rust-aip"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "protoc plugin that emits Rust helpers for Google AIP-shaped APIs: resource names, List query parsing and the OUTPUT_ONLY clearing walk."
 repository = "https://github.com/protoc-contrib/protoc-gen-rust-aip"
+homepage = "https://github.com/protoc-contrib/protoc-gen-rust-aip"
 keywords = ["aip", "protobuf", "buffa", "grpc", "codegen"]
 categories = ["development-tools"]
 

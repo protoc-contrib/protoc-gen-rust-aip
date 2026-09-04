@@ -1,1 +1,7 @@
 /target
+
+# `nix build` output symlinks. Untracked and, more to the point, kept out of
+# `cargo package` -- they point at a built binary in the Nix store, which cargo
+# will happily follow into the published crate.
+/result
+/result-*
