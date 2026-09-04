@@ -1,5 +1,5 @@
 [workspace]
-members = ["fixture"]
+members = ["tests/fixture"]
 
 [package]
 name = "protoc-gen-rust-aip"

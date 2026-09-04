@@ -30,7 +30,7 @@ name it uses must be a declared field — rather than type-checked the way
 `cel-go` does for `protoc-gen-go-aip`. `title == 5` compiles here and fails at
 the query layer. See [Query helpers](#query-helpers-per-list-request).
 
-`fixture/` compiles the schema in `tests/proto` with **both** `buffa` and this
+`tests/fixture/` compiles the schema in `tests/proto` with **both** `buffa` and this
 plugin and exercises the result, so the generated code is type-checked against
 real message types rather than only diffed against a golden file.
 

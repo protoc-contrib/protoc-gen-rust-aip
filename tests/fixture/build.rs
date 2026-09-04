@@ -17,8 +17,7 @@ use buffa_codegen::generated::{
 };
 use protoc_gen_rust_aip::{emit, messages, scan};
 
-/// The schema under test. Kept in the plugin crate's own `tests/proto` so the
-/// unit tests and this crate describe one set of cases.
+/// The schema under test, relative to the sibling `tests/proto`.
 const SCHEMA: &[&str] = &[
     "example/v1/library.proto",
     "example/v1/uuid.proto",
@@ -30,8 +29,13 @@ const SCHEMA: &[&str] = &[
 fn main() -> Result<()> {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out = PathBuf::from(std::env::var("OUT_DIR")?);
-    let plugin = manifest.parent().context("fixture has a parent")?;
-    let schema_root = plugin.join("tests/proto");
+    // This crate lives at `<plugin>/tests/fixture`, so the schema is its
+    // sibling and the plugin root is two levels up.
+    let tests = manifest.parent().context("fixture sits under tests/")?;
+    let plugin = tests
+        .parent()
+        .context("tests/ sits under the plugin root")?;
+    let schema_root = tests.join("proto");
     // The plugin vendors the `google/api` annotations the schema imports.
     let annotations = plugin.join("proto");
 
