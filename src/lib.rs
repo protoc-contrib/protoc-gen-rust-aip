@@ -13,5 +13,6 @@
 
 pub mod annotations;
 pub mod emit;
+mod idents;
 pub mod messages;
 pub mod scan;

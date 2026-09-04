@@ -22,6 +22,7 @@ use buffa_codegen::generated::{
 use crate::annotations::google::api::{
     FIELD_INFO, RESOURCE, RESOURCE_DEFINITION, RESOURCE_REFERENCE, ResourceDescriptor, field_info,
 };
+use crate::idents::snake_case;
 
 /// The AIP-159 wildcard, which `google.api.resource_reference` uses to mean
 /// "any resource type". A reference that names it is not bound to a pattern, so
@@ -332,7 +333,7 @@ impl Registry {
     fn annotate_formats(&mut self, create_requests: &CreateRequests) {
         // Resolved against the pre-annotation registry and applied afterwards,
         // because `find_by_pattern` borrows the whole registry.
-        let mut resolved: Vec<(usize, usize, usize, Format)> = Vec::new();
+        let mut resolved: Vec<Resolved> = Vec::new();
         for (resource_index, resource) in self.resources.iter().enumerate() {
             for (pattern_index, pattern) in resource.patterns.iter().enumerate() {
                 for segment_index in 0..pattern.segments.len() {
@@ -356,13 +357,19 @@ impl Registry {
                         .copied()
                         .unwrap_or_default();
                     if format != Format::String {
-                        resolved.push((resource_index, pattern_index, segment_index, format));
+                        resolved.push(Resolved {
+                            resource: resource_index,
+                            pattern: pattern_index,
+                            segment: segment_index,
+                            format,
+                        });
                     }
                 }
             }
         }
-        for (resource, pattern, segment, format) in resolved {
-            self.resources[resource].patterns[pattern].segments[segment].format = format;
+        for entry in resolved {
+            self.resources[entry.resource].patterns[entry.pattern].segments[entry.segment].format =
+                entry.format;
         }
     }
 
@@ -382,6 +389,17 @@ impl Registry {
         self.resources.push(resource);
         Ok(())
     }
+}
+
+/// One segment's format, resolved but not yet applied.
+///
+/// Three bare `usize` indices in a tuple would let a call site transpose them
+/// silently; named, the assignment reads as what it is.
+struct Resolved {
+    resource: usize,
+    pattern: usize,
+    segment: usize,
+    format: Format,
 }
 
 /// Builds the registry from every file in the request.
@@ -661,23 +679,6 @@ fn rust_path(parents: &[&str], name: &str) -> String {
     }
     path.push_str(name);
     path
-}
-
-/// `PascalCase` to `snake_case`, matching buffa's nested-type module naming.
-fn snake_case(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 2);
-    for (index, &c) in chars.iter().enumerate() {
-        if c.is_uppercase() && index > 0 {
-            let previous = chars[index - 1];
-            let next_is_lower = chars.get(index + 1).is_some_and(char::is_ascii_lowercase);
-            if previous.is_lowercase() || (previous.is_uppercase() && next_is_lower) {
-                out.push('_');
-            }
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 #[cfg(test)]

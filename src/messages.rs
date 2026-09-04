@@ -18,6 +18,7 @@ use buffa_codegen::generated::{
 };
 
 use crate::annotations::google::api::{FIELD_BEHAVIOR, FieldBehavior};
+use crate::idents::module;
 
 /// What a field holds, to the resolution these passes care about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,27 +330,6 @@ fn oneof_module(parents: &[&str], name: &str) -> String {
     }
     path.push_str(&module(name));
     path
-}
-
-fn module(name: &str) -> String {
-    buffa_codegen::idents::escape_mod_ident(&snake_case(name))
-}
-
-/// `PascalCase` to `snake_case`, matching buffa's module naming.
-pub(crate) fn snake_case(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 2);
-    for (index, &c) in chars.iter().enumerate() {
-        if c.is_uppercase() && index > 0 {
-            let previous = chars[index - 1];
-            let next_is_lower = chars.get(index + 1).is_some_and(char::is_ascii_lowercase);
-            if previous.is_lowercase() || (previous.is_uppercase() && next_is_lower) {
-                out.push('_');
-            }
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 #[cfg(test)]

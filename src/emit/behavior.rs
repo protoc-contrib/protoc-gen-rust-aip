@@ -173,7 +173,15 @@ fn emit_message(
          See <https://google.aip.dev/203>.",
     ));
 
+    // `Default::default()` rather than a named type per field: that is what
+    // lets one emitter clear a `String`, a `Vec`, a `MessageField`, an
+    // `EnumValue` and an `Option` without this plugin duplicating buffa's
+    // proto-to-Rust type mapping and going stale when it changes.
     quote! {
+        #[allow(
+            clippy::default_trait_access,
+            reason = "the concrete type of each field is buffa's to decide, not this plugin's"
+        )]
         impl #path {
             #doc
             pub fn clear_output_only(&mut self) {

@@ -200,7 +200,10 @@ fn emit_filter(resource: &Message) -> TokenStream {
          That name check is all the boundary can do. cel-rust has no type \
          checker, so an expression comparing a string field to an integer \
          compiles here and fails further down, unlike the Go implementation \
-         where cel-go's checker rejects it.",
+         where cel-go's checker rejects it.\n\n\
+         # Errors\n\n\
+         If the expression is not valid CEL, or references a name that is not \
+         one of [`QUERY_FIELDS`](Self::QUERY_FIELDS).",
         short_name(&resource.fqn),
     ));
     quote! {
@@ -243,7 +246,10 @@ fn emit_order_by() -> TokenStream {
         "Parses the AIP-132 `order_by` string, rejecting any path outside \
          [`QUERY_FIELDS`](Self::QUERY_FIELDS).\n\n\
          An empty `order_by` parses to an empty ordering, which is the \
-         server's choice of order rather than an error.",
+         server's choice of order rather than an error.\n\n\
+         # Errors\n\n\
+         If the string is not AIP-132 ordering syntax, or names a path that is \
+         not one of [`QUERY_FIELDS`](Self::QUERY_FIELDS).",
     );
     quote! {
         #method_doc
@@ -293,7 +299,10 @@ fn emit_page_token(request: &Message) -> TokenStream {
          request.\n\n\
          An empty token — the first page — yields a zero-offset token carrying \
          this request's checksum, so the result is always safe to advance and \
-         hand back to the client.",
+         hand back to the client.\n\n\
+         # Errors\n\n\
+         If the token is malformed, or was issued for a different query — \
+         which means the client changed `filter` or `order_by` mid-page.",
     );
 
     // `checksum`, not `request_checksum`: the method hangs off the request, so
@@ -301,6 +310,11 @@ fn emit_page_token(request: &Message) -> TokenStream {
     // longer name, where it earns it by saying what the bytes are.
     quote! {
         #checksum_doc
+        #[must_use]
+        #[allow(
+            clippy::default_trait_access,
+            reason = "the concrete type of each cleared field is buffa's to decide, not this plugin's"
+        )]
         pub fn checksum(&self) -> u32 {
             let mut request = ::core::clone::Clone::clone(self);
             #( #clears )*
@@ -369,7 +383,8 @@ fn emit_query_struct(
     let method_doc = doc(
         "Parses every AIP dimension this request carries, applying the same \
          checks as the per-dimension parsers.\n\n\
-         The first failing dimension's error is returned; map it to \
+         # Errors\n\n\
+         If any dimension fails. The first failure is returned; map it to \
          `InvalidArgument` at the RPC boundary.",
     );
 

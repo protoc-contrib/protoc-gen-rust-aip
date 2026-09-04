@@ -95,7 +95,7 @@ pub fn render(
                 // Brings the buffa message types the module tree mounted into
                 // scope. A file that declares only resource names references
                 // none of them, hence the allow.
-                #[allow(unused_imports)]
+                #[allow(unused_imports, clippy::wildcard_imports)]
                 use super::*;
                 #body
             },
@@ -212,7 +212,7 @@ fn node_tokens(node: &Node, path: &[&str], proto_module: &syn::Path) -> TokenStr
             // this file is machine-generated and read at a glance, and a paragraph
             // above every `use` buries the three lines that carry information.
             quote! {
-                #[allow(unused_imports)]
+                #[allow(unused_imports, clippy::wildcard_imports)]
                 use #proto_module #( :: #segments )* ::*;
                 include!(#include);
             }
@@ -228,7 +228,7 @@ fn node_tokens(node: &Node, path: &[&str], proto_module: &syn::Path) -> TokenStr
             quote! {
                 #[allow(clippy::module_inception)]
                 pub mod #ident {
-                    #[allow(unused_imports)]
+                    #[allow(unused_imports, clippy::wildcard_imports)]
                     use super::*;
                     #inner
                 }

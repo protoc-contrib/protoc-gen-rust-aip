@@ -52,7 +52,7 @@ fn an_empty_filter_is_absent_rather_than_an_error() {
 
 #[test]
 fn rejects_a_filter_naming_something_undeclared() {
-    let error = request(r#"shoe_size == 9"#, "").parse_filter().unwrap_err();
+    let error = request("shoe_size == 9", "").parse_filter().unwrap_err();
     match error {
         aip::query::FilterError::Undeclared { name, declared } => {
             assert_eq!(name, "shoe_size");

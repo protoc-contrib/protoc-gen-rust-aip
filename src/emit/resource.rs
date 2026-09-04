@@ -18,6 +18,7 @@ use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
 use crate::emit::doc;
+use crate::idents::snake_case;
 use crate::scan::{Format, Pattern, Reference, Registry, Resource, Segment};
 
 /// The UUID standing in for a typed segment in a doc example.
@@ -168,12 +169,18 @@ fn emit_multi_pattern(resource: &Resource, package: &str, registry: &Registry) -
     ));
     let parse_doc = doc(&format!(
         "Parses the relative resource name, trying each pattern of `{}` in \
-         declaration order and returning the first that matches.",
+         declaration order and returning the first that matches.\n\n\
+         # Errors\n\n\
+         If `name` matches none of the {count} patterns. The error carries \
+         what each one rejected, so the caller can say more than \"no\".",
         resource.resource_type,
     ));
     let parse_full_doc = doc(&format!(
         "Parses the fully-qualified resource name, prefixed `//{}/`, trying \
-         each pattern in declaration order.",
+         each pattern in declaration order.\n\n\
+         # Errors\n\n\
+         If `name` matches none of the {count} patterns, including because it \
+         carries the wrong prefix.",
         resource.domain,
     ));
     let message = emit_message_accessors(
@@ -416,22 +423,45 @@ fn emit_pattern_struct(
             resource.resource_type, pattern.source,
         )),
     };
+    // Every variable segment that is not a plain string can also reject a
+    // value the scan accepted, so the `# Errors` section says so only when the
+    // pattern actually has one.
+    let typed = segments
+        .iter()
+        .any(|segment| segment.format != Format::String);
+    let value_clause = if typed {
+        ", or a segment whose value is not of the type that segment holds"
+    } else {
+        ""
+    };
     let parse_doc = doc(&format!(
-        "Parses the relative resource name, e.g. `{}`.",
+        "Parses the relative resource name, e.g. `{}`.\n\n\
+         # Errors\n\n\
+         If `name` is not of the pattern `{}`: the wrong number of segments, a \
+         literal segment that does not match, an empty variable segment{}.",
         example(pattern),
+        pattern.source,
+        value_clause,
     ));
     let parse_full_doc = doc(&format!(
-        "Parses the fully-qualified resource name, e.g. `//{}/{}`.",
+        "Parses the fully-qualified resource name, e.g. `//{}/{}`.\n\n\
+         # Errors\n\n\
+         If `name` does not begin `//{}/`, or the rest of it is not of the \
+         pattern `{}`; see [`parse`](Self::parse).",
         resource.domain,
         example(pattern),
+        resource.domain,
+        pattern.source,
     ));
 
     quote! {
         #struct_doc
+        // No `Default`: every variable segment would be empty, which is a name
+        // `validate` rejects. A type whose default value is invalid is a trap,
+        // and a struct literal is no harder to write.
         #[derive(
             ::core::fmt::Debug,
             ::core::clone::Clone,
-            ::core::default::Default,
             ::core::cmp::PartialEq,
             ::core::cmp::Eq,
             ::core::cmp::PartialOrd,
@@ -598,6 +628,7 @@ fn emit_parent(
     ));
     let method = quote! {
         #method_doc
+        #[must_use]
         pub fn parent(&self) -> #return_path {
             #construct
         }
@@ -641,6 +672,7 @@ fn emit_parent(
     let builder = quote! {
         impl #variant_path {
             #builder_doc
+            #[must_use]
             pub fn #builder_name(&self #(, #params )*) -> #name_type {
                 #name_type {
                     #( #from_parent, )*
@@ -673,11 +705,17 @@ fn emit_message_accessors(
         quote! { &self.#field }
     };
     let parse_doc = doc(&format!(
-        "Parses `{}` as a `{}` resource name.",
+        "Parses `{}` as a `{}` resource name.\n\n\
+         # Errors\n\n\
+         If the field does not hold a name of this resource; see \
+         [`{name_type}::parse`].",
         binding.name_field, resource.resource_type,
     ));
     let parse_full_doc = doc(&format!(
-        "Parses `{}` as a fully-qualified `{}` resource name.",
+        "Parses `{}` as a fully-qualified `{}` resource name.\n\n\
+         # Errors\n\n\
+         If the field does not hold a fully-qualified name of this resource; \
+         see [`{name_type}::parse_full`].",
         binding.name_field, resource.resource_type,
     ));
     quote! {
@@ -717,7 +755,9 @@ fn emit_reference(reference: &Reference, package: &str, registry: &Registry) -> 
         quote! { &self.#field }
     };
     let method_doc = doc(&format!(
-        "Parses `{}` as the `{}` resource name it references.",
+        "Parses `{}` as the `{}` resource name it references.\n\n\
+         # Errors\n\n\
+         If the field does not hold a name of that resource.",
         reference.field_name, resource.resource_type,
     ));
     quote! {
@@ -849,23 +889,6 @@ fn example(pattern: &Pattern) -> String {
         } else {
             out.push_str(&segment.name);
         }
-    }
-    out
-}
-
-/// `PascalCase` to `snake_case`, for deriving a method name from a type name.
-fn snake_case(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 2);
-    for (index, &c) in chars.iter().enumerate() {
-        if c.is_uppercase() && index > 0 {
-            let previous = chars[index - 1];
-            let next_is_lower = chars.get(index + 1).is_some_and(char::is_ascii_lowercase);
-            if previous.is_lowercase() || (previous.is_uppercase() && next_is_lower) {
-                out.push('_');
-            }
-        }
-        out.push(c.to_ascii_lowercase());
     }
     out
 }

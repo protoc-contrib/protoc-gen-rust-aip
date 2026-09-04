@@ -1,5 +1,12 @@
 //! Exercises the AIP-203 `OUTPUT_ONLY` clearing walk.
 
+// Clearing sets a field to its `Default`, so `0.0` is the exact value under
+// test rather than the result of any arithmetic.
+#![allow(
+    clippy::float_cmp,
+    reason = "asserting a field was reset to its default"
+)]
+
 use aip_fixture::proto::example::v1::{Address, Carrier, Event, Parcel, Shipment, event};
 use buffa::MessageField;
 
