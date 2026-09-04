@@ -1,0 +1,64 @@
+// Fixture for the AIP-203 OUTPUT_ONLY clearing walk.
+//
+// Covers every shape the walk has to reach: a scalar, a message, a repeated
+// message, a map with message values, a nested message that is itself clean
+// but contains something that is not, and a oneof with an output-only member.
+syntax = "proto3";
+
+package example.v1;
+
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+message Shipment {
+  // Client-settable.
+  string reference = 1;
+
+  // Server-owned, of every shape.
+  string tracking_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  repeated string audit_log = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  int32 revision = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Not output-only itself, but holds fields that are: the walk must descend.
+  Carrier carrier = 6;
+  repeated Parcel parcels = 7;
+  map<string, Parcel> parcels_by_code = 8;
+
+  // Nothing output-only anywhere beneath it; the walk must not descend.
+  Address origin = 9;
+
+  // A field carrying more than one behavior still counts as output-only.
+  string etag = 10 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
+}
+
+message Carrier {
+  string name = 1;
+  string scac = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message Parcel {
+  string label = 1;
+  double billed_weight = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // Two levels down, to prove the walk is recursive rather than one-deep.
+  Carrier carrier = 3;
+}
+
+// No output-only fields at any depth, so no walk is emitted for it at all.
+message Address {
+  string line1 = 1;
+  string city = 2;
+}
+
+// A oneof with one output-only member.
+message Event {
+  string id = 1;
+  oneof detail {
+    string note = 2;
+    string server_trace = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+    Carrier handoff = 4;
+  }
+}

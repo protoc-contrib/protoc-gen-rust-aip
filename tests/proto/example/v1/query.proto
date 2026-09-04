@@ -1,0 +1,80 @@
+// Fixture for the List query pass.
+//
+// Nothing here is annotated for querying. Book is the resource because
+// ListBooksResponse has exactly one repeated message field, and Book's fields
+// are what get declared.
+syntax = "proto3";
+
+package example.v1;
+
+import "google/api/resource.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+enum Genre {
+  GENRE_UNSPECIFIED = 0;
+  GENRE_FICTION = 1;
+  GENRE_NONFICTION = 2;
+}
+
+message Volume {
+  option (google.api.resource) = {
+    type: "example.com/Volume"
+    pattern: "volumes/{volume}"
+  };
+
+  string name = 1;
+  string title = 2;
+  int64 read_count = 3;
+  bool published = 4;
+  Genre genre = 5;
+  google.protobuf.Timestamp create_time = 6;
+  google.protobuf.Duration read_time = 7;
+
+  // No CEL type, all skipped rather than rejected:
+  Cover cover = 8;              // a nested message with no total order
+  repeated string tags = 9;     // a repeated field
+  map<string, string> labels = 10;
+}
+
+message Cover {
+  string url = 1;
+}
+
+message ListVolumesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string filter = 3;
+  string order_by = 4;
+}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+  string next_page_token = 2;
+}
+
+// Carries only `filter`, to prove each dimension is emitted independently.
+message SearchVolumesRequest {
+  string filter = 1;
+}
+
+message SearchVolumesResponse {
+  repeated Volume volumes = 1;
+}
+
+// Two repeated message fields, so the response does not say which is the
+// resource and no query helpers are emitted for its request.
+message BrowseRequest {
+  string filter = 1;
+}
+
+message BrowseResponse {
+  repeated Volume volumes = 1;
+  repeated Cover covers = 2;
+}
+
+service Library {
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+  rpc SearchVolumes(SearchVolumesRequest) returns (SearchVolumesResponse);
+  rpc Browse(BrowseRequest) returns (BrowseResponse);
+}

@@ -1,0 +1,23 @@
+// Fixture for cross-package resolution: a reference to a resource declared in
+// another proto package, and a resource nested under one.
+syntax = "proto3";
+
+package other.v1;
+
+import "google/api/resource.proto";
+import "example/v1/library.proto";
+
+message Entry {
+  string book = 1 [(google.api.resource_reference) = { type: "example.com/Book" }];
+  string publisher = 2 [(google.api.resource_reference) = { type: "example.com/Publisher" }];
+}
+
+// Shelf is a child of example.v1's Publisher, across a package boundary.
+message Shelf {
+  option (google.api.resource) = {
+    type: "other.example.com/Shelf"
+    pattern: "publishers/{publisher}/shelves/{shelf}"
+  };
+
+  string name = 1;
+}

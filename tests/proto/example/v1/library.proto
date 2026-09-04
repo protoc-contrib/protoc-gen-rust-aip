@@ -1,0 +1,65 @@
+// Fixture for the resource pass. Exercises a single-pattern resource, a
+// multi-pattern one, a name field that is not called "name", a resource
+// reference, and a file-scope resource_definition.
+syntax = "proto3";
+
+package example.v1;
+
+import "google/api/resource.proto";
+
+option (google.api.resource_definition) = {
+  type: "example.com/Region"
+  pattern: "regions/{region}"
+};
+
+message Publisher {
+  option (google.api.resource) = {
+    type: "example.com/Publisher"
+    pattern: "publishers/{publisher}"
+  };
+
+  string name = 1;
+}
+
+message Author {
+  option (google.api.resource) = {
+    type: "example.com/Author"
+    pattern: "authors/{author}"
+  };
+
+  string name = 1;
+}
+
+// Book is reachable under either a publisher or an author.
+message Book {
+  option (google.api.resource) = {
+    type: "example.com/Book"
+    pattern: "publishers/{publisher}/books/{book}"
+    pattern: "authors/{author}/books/{book}"
+  };
+
+  string name = 1;
+}
+
+// Person keeps its resource name somewhere other than "name".
+message Person {
+  option (google.api.resource) = {
+    type: "example.com/Person"
+    pattern: "persons/{person}"
+    name_field: "person_name"
+  };
+
+  string person_name = 1;
+}
+
+message CreateBookRequest {
+  string parent = 1 [(google.api.resource_reference) = { type: "example.com/Publisher" }];
+  Book book = 2;
+  string book_id = 3;
+}
+
+// Neither reference resolves to a pattern, so both are silently skipped.
+message Unresolvable {
+  string children = 1 [(google.api.resource_reference) = { child_type: "example.com/Book" }];
+  string anything = 2 [(google.api.resource_reference) = { type: "*" }];
+}

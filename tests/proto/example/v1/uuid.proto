@@ -1,0 +1,78 @@
+// Fixture for UUID-typed segments. A resource ID's type is declared by
+// google.api.field_info on the AIP-133 create request that mints it, so these
+// resources are typed by their Create*Request rather than by anything on the
+// resource itself.
+//
+// Second file in the example.v1 package, which also exercises a package whose
+// module mounts more than one generated file.
+syntax = "proto3";
+
+package example.v1;
+
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+
+// Collection is a single-segment resource with a UUID id.
+message Collection {
+  option (google.api.resource) = {
+    type: "example.com/Collection"
+    pattern: "collections/{collection}"
+  };
+
+  string name = 1;
+}
+
+message CreateCollectionRequest {
+  Collection collection = 1;
+  string collection_id = 2 [(google.api.field_info).format = UUID4];
+}
+
+// Organization is Item's parent. Its segment format is what Item's leading
+// segment inherits.
+message Organization {
+  option (google.api.resource) = {
+    type: "example.com/Organization"
+    pattern: "organizations/{organization}"
+  };
+
+  string name = 1;
+}
+
+message CreateOrganizationRequest {
+  Organization organization = 1;
+  string organization_id = 2 [(google.api.field_info).format = UUID4];
+}
+
+// Item exercises a parent/child pair where both segments are UUID4, so
+// Parent() flows a typed id through without bridging via a string.
+message Item {
+  option (google.api.resource) = {
+    type: "example.com/Item"
+    pattern: "organizations/{organization}/items/{item}"
+  };
+
+  string name = 1;
+}
+
+message CreateItemRequest {
+  string parent = 2 [(google.api.resource_reference) = { type: "example.com/Organization" }];
+  Item item = 3;
+  string item_id = 4 [(google.api.field_info).format = UUID4];
+}
+
+// Note exercises a mixed pattern: a UUID parent segment and an opaque string
+// id of its own, since CreateNoteRequest.note_id carries no format.
+message Note {
+  option (google.api.resource) = {
+    type: "example.com/Note"
+    pattern: "organizations/{organization}/notes/{note}"
+  };
+
+  string name = 1;
+}
+
+message CreateNoteRequest {
+  string parent = 1;
+  Note note = 2;
+  string note_id = 3;
+}
