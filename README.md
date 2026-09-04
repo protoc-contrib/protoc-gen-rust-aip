@@ -286,6 +286,22 @@ pub mod aip {
 }
 ```
 
+## Development
+
+The toolchain is pinned by `rust-toolchain.toml` and provided by the flake:
+
+```bash
+nix develop          # cargo, rustc, clippy, rustfmt, protoc
+cargo test --workspace
+```
+
+Without Nix on the host, `.devcontainer/` supplies it inside the container —
+open the repo in a devcontainer and the same `nix develop` works.
+
+`cargo test --workspace` regenerates the schema in `tests/proto` through both
+`buffa` and this plugin, so a change to an emitter is compiled and exercised
+rather than only diffed.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
