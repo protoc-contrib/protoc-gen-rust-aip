@@ -296,9 +296,12 @@ fn emit_page_token(request: &Message) -> TokenStream {
          hand back to the client.",
     );
 
+    // `checksum`, not `request_checksum`: the method hangs off the request, so
+    // the prefix only stutters. The free function it delegates to keeps the
+    // longer name, where it earns it by saying what the bytes are.
     quote! {
         #checksum_doc
-        pub fn request_checksum(&self) -> u32 {
+        pub fn checksum(&self) -> u32 {
             let mut request = ::core::clone::Clone::clone(self);
             #( #clears )*
             ::aip::pagination::request_checksum(
@@ -310,7 +313,7 @@ fn emit_page_token(request: &Message) -> TokenStream {
         pub fn parse_page_token(
             &self,
         ) -> ::core::result::Result<::aip::PageToken, ::aip::pagination::ParseError> {
-            ::aip::PageToken::parse(&self.page_token, self.request_checksum())
+            ::aip::PageToken::parse(&self.page_token, self.checksum())
         }
     }
 }

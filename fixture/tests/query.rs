@@ -108,7 +108,7 @@ fn an_empty_page_token_is_the_first_page() {
     let request = request("", "");
     let token = request.parse_page_token().unwrap();
     assert_eq!(token.offset, 0);
-    assert_eq!(token.request_checksum, request.request_checksum());
+    assert_eq!(token.request_checksum, request.checksum());
 }
 
 #[test]
@@ -148,9 +148,9 @@ fn page_size_does_not_take_part_in_the_checksum() {
     // size must still validate at another.
     let mut request = request("published", "");
     request.page_size = 10;
-    let checksum = request.request_checksum();
+    let checksum = request.checksum();
     request.page_size = 50;
-    assert_eq!(request.request_checksum(), checksum);
+    assert_eq!(request.checksum(), checksum);
 }
 
 #[test]

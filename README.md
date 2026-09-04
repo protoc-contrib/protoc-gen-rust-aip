@@ -74,7 +74,7 @@ impl ListBooksRequest {
     pub fn parse_filter(&self) -> Result<Option<cel::Program>, aip::query::FilterError>;
     pub fn parse_order_by(&self) -> Result<aip::OrderBy, aip::QueryError>;
     pub fn parse_page_token(&self) -> Result<aip::PageToken, aip::pagination::ParseError>;
-    pub fn request_checksum(&self) -> u32;
+    pub fn checksum(&self) -> u32;
 
     pub fn parse_query(&self) -> Result<ListBooksQuery, aip::QueryError>;
 }
@@ -117,7 +117,7 @@ checker.
 
 #### The page-token checksum
 
-`request_checksum` clones the request, clears `page_token`, `page_size` and
+`checksum` clones the request, clears `page_token`, `page_size` and
 `skip`, and marshals it — the AIP-158 rule, which is why the generated code
 depends on `buffa`. A mismatch means the client changed `filter` or `order_by`
 mid-page.
