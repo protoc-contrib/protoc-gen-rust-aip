@@ -58,6 +58,23 @@ pub struct Options {
     /// not mount the tree can only resolve those hops for a single-package
     /// schema.
     pub packaging: bool,
+
+    /// Whether to emit each read-only accessor for buffa's borrowed view type
+    /// as well as for the owned message.
+    ///
+    /// Off by default, because a view type only exists if `buffa` generated
+    /// one, and emitting `impl FooView<'_>` when it did not is a compile error
+    /// in the consumer rather than a missing method. There is nothing in a
+    /// `CodeGeneratorRequest` that says whether views were generated, so this
+    /// has to be told.
+    ///
+    /// Worth turning on for a connectrpc server: a handler is passed a
+    /// `ServiceRequest` that derefs to the *view*, so without this the
+    /// accessors are emitted onto a type the handler never holds.
+    ///
+    /// Only the read-only accessors are doubled. `clear_output_only` takes
+    /// `&mut self`, and a view does not own what it would clear.
+    pub views: bool,
 }
 
 impl Default for Options {
@@ -65,6 +82,7 @@ impl Default for Options {
         Self {
             proto_module: "crate::proto".to_owned(),
             packaging: true,
+            views: false,
         }
     }
 }
@@ -110,10 +128,10 @@ pub fn render(
             .ok_or_else(|| anyhow!("{name} is scheduled for generation but not in the request"))?;
         let package = descriptor.package.clone().unwrap_or_default();
 
-        let resources = resource::emit_file(name, &package, registry);
-        let creates = resource::emit_create_ids(name, index, registry);
+        let resources = resource::emit_file(name, &package, registry, options.views);
+        let creates = resource::emit_create_ids(name, index, registry, options.views);
         let behaviors = behavior::emit_file(name, index, &walks, &generated);
-        let masks = field_mask::emit_file(name, index, &updates, &generated);
+        let masks = field_mask::emit_file(name, index, &updates, &generated, options.views);
         let queries = query::emit_file(name, index, &lists, &generated);
         if resources.is_empty()
             && creates.is_empty()
@@ -241,6 +259,47 @@ fn type_path_in(from: &Message, index: &Index, target: &str) -> TokenStream {
             quote! { #segment }
         });
     quote! { #( #ups :: )* #( #downs :: )* #path }
+}
+
+/// Emits `body` as an inherent impl on `path`, and again on its buffa view type
+/// when `views` is on.
+///
+/// The bodies are token-identical, which is not a coincidence worth hiding: an
+/// accessor reads a field, and a view's field holds `&str` where the owned
+/// message holds `String`. Every operation these accessors perform on one --
+/// `is_empty`, `&self.field` into a `&str` parameter, `as_option` -- is spelled
+/// the same for the other, so the tokens are shared rather than re-derived.
+fn impl_for(path: &TokenStream, view: bool, body: &TokenStream) -> TokenStream {
+    let owned = quote! { impl #path { #body } };
+    if !view {
+        return owned;
+    }
+    let view = view_path(path);
+    quote! {
+        #owned
+        // On the view copy only, so the owned impl keeps full coverage. A view
+        // holds `&str` where the owned message holds `String`, so `&self.field`
+        // is the borrow the owned form needs and one deref too many here --
+        // which is the price of the two impls sharing one body.
+        #[allow(
+            clippy::needless_borrow,
+            reason = "the borrow is required by the owned impl these tokens are shared with"
+        )]
+        impl #view <'_> { #body }
+    }
+}
+
+/// buffa names the borrowed form of `Foo` as `FooView<'a>`, so the view of a
+/// path is its last segment with `View` appended.
+fn view_path(path: &TokenStream) -> TokenStream {
+    let rendered = path.to_string().replace(' ', "");
+    let (module, name) = match rendered.rsplit_once("::") {
+        Some((module, name)) => (format!("{module}::"), name.to_owned()),
+        None => (String::new(), rendered),
+    };
+    format!("{module}{name}View")
+        .parse()
+        .expect("a view path built from a message path is a valid Rust path")
 }
 
 /// Renders `text` as a doc comment.

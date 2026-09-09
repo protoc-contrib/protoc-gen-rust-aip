@@ -53,6 +53,9 @@ pub enum Kind {
 pub struct Field {
     /// The proto field name, e.g. `create_time`.
     pub name: String,
+    /// The field number, which a protovalidate `FieldPathElement` carries
+    /// alongside the name.
+    pub number: i32,
     pub kind: Kind,
     /// The fully-qualified type name for a message or enum field, else empty.
     pub type_name: String,
@@ -256,6 +259,7 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str]) -> Field {
 
     Field {
         name: field.name.clone().unwrap_or_default(),
+        number: field.number.unwrap_or_default(),
         kind,
         type_name: field.type_name.clone().unwrap_or_default(),
         repeated: field.label == Some(Label::LABEL_REPEATED),

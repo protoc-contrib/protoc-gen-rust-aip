@@ -43,6 +43,7 @@ Only what a schema actually uses:
 | `buffa` | a List request has a `page_token` — the checksum marshals the request |
 | `cel` | a List request has a `filter` |
 | `uuid` | a resource ID is annotated `UUID4` |
+| [`protovalidate-buffa`](https://github.com/mathematic-inc/protovalidate-buffa) | a schema has an update request — the mask check reports a violation |
 
 
 ## What it generates
@@ -147,9 +148,27 @@ impl Shipment {
 }
 
 impl UpdateShipmentRequest {
-    pub fn validate_update_mask(&self) -> Result<(), aip::field_mask::FieldMaskError>;
+    pub fn validate_update_mask(&self) -> Result<(), protovalidate_buffa::ValidationError>;
 }
 ```
+
+**It reports a protovalidate violation**, because that is what it is: a rule
+about a field, on a request whose other rules are protovalidate's already. A bad
+mask reaches the client as an ordinary violation — same `invalid_argument`, same
+`update_mask.paths[1]` field path, under rule id `update_mask.mutable_paths` —
+so a client cannot tell which rules were transpiled from `buf.validate` and
+which were generated from `google.api.field_behavior`. The alternative, an error
+of this project's own, would have meant a second error shape at the boundary for
+no gain.
+
+The rule cannot be moved into the schema instead: it has to say "every path is
+one of these", and protovalidate-buffa transpiles CEL ahead of time —
+`this.paths.all(...)` is outside the subset it supports.
+
+An **inherent method, not a `Validate` impl**. The protovalidate plugin already
+owns `Validate` for the request, and a second impl of one trait for one type is
+a coherence error. So `#[protovalidate_buffa::connect_impl]` does not run it;
+call it alongside, in the two or three handlers that take a mask.
 
 A nested path is **walked, not looked up**. Enumerating every dotted path a
 mask could name is unbounded the moment a schema has a message that can reach
@@ -348,6 +367,36 @@ pub mod aip {
     include!("aip/mod.rs");
 }
 ```
+
+### Views: `views=true`
+
+buffa's two-tier model gives every message a borrowed `FooView<'a>`, and a
+connectrpc handler is passed a `ServiceRequest` that derefs to *that*, not to
+the owned message. So an accessor emitted only on `Foo` is one a handler cannot
+reach:
+
+```rust
+async fn update_shipment(&self, ctx: RequestContext, request: ServiceRequest<'_, UpdateShipmentRequest>) {
+    request.validate_update_mask()?;   // needs views=true
+}
+```
+
+With `views=true` every read-only accessor — `parse_name`, `parse_full_name`,
+`parse_<reference>`, `<resource>_id_or_new`, `validate_update_mask` — is emitted
+for `FooView<'_>` as well. The bodies are token-identical: a view's field holds
+`&str` where the owned message holds `String`, and every operation these
+accessors perform is spelled the same for both.
+
+`clear_output_only` is not doubled. It takes `&mut self`, and a view does not
+own what it would clear.
+
+Off by default, and it has to be: nothing in a `CodeGeneratorRequest` says
+whether buffa generated views, and emitting `impl FooView<'_>` when it did not
+is a compile error in the consumer rather than a missing method.
+
+`MUTABLE_PATHS` and `is_mutable_path` are unaffected — they are associated items
+on the resource, and `is_mutable_path` takes a `&str`, so there is nothing for a
+view to borrow.
 
 ### Or skip the packaging output: `packaging=false`
 

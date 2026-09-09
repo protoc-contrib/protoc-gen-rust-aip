@@ -296,3 +296,32 @@ fn a_child_gets_an_accessor_for_its_own_id_only() {
         uuid::Uuid::parse_str(ID).unwrap()
     );
 }
+
+#[test]
+fn the_accessors_are_emitted_for_views_too() {
+    // Same three accessors, on the borrowed form: a name field, a reference,
+    // and the AIP-133 create ID.
+    let book = proto::example::v1::Book {
+        name: "publishers/p1/books/b1".to_owned(),
+        ..Default::default()
+    };
+    let book = proto::example::v1::BookOwnedView::from_owned(&book).unwrap();
+    assert!(book.view().parse_name().is_ok());
+
+    let request = proto::example::v1::CreateBookRequest {
+        parent: "publishers/p1".to_owned(),
+        ..Default::default()
+    };
+    let request = proto::example::v1::CreateBookRequestOwnedView::from_owned(&request).unwrap();
+    assert_eq!(request.view().parse_parent().unwrap().publisher_id, "p1");
+
+    let create = proto::example::v1::CreateCollectionRequest {
+        collection_id: ID.to_owned(),
+        ..Default::default()
+    };
+    let create = proto::example::v1::CreateCollectionRequestOwnedView::from_owned(&create).unwrap();
+    assert_eq!(
+        create.view().collection_id_or_new().unwrap(),
+        uuid::Uuid::parse_str(ID).unwrap()
+    );
+}

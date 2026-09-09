@@ -23,14 +23,16 @@ buffa-types = "0.9.2"
 # A sibling checkout would work here too and is quicker to iterate against, but
 # it makes a standalone clone of this repo unbuildable, which is exactly what
 # this crate exists to prove is not the case.
-# On a branch until protoc-contrib/aip-rs#1 merges: that PR adds the
-# `field_mask` module the AIP-134 check reports with. Drop the `branch` once
-# it lands.
-aip = { package = "aip-rs", git = "https://github.com/protoc-contrib/aip-rs", branch = "feat/read-only-halves" }
+aip = { package = "aip-rs", git = "https://github.com/protoc-contrib/aip-rs" }
 # Only a schema that annotates an ID as UUID4 needs this; the plugin names the
 # crate in generated code exactly when it types a segment as one. `v4` because
 # the AIP-133 create-ID accessor mints one when the caller proposes none.
 uuid = { version = "1", features = ["v4"] }
+# The AIP-134 mask check reports a protovalidate violation, so a schema with an
+# update request needs the runtime. Only that -- not the codegen plugin: this
+# crate emits the check itself and borrows protovalidate's error shape so a bad
+# mask is indistinguishable from any other rule violation at the boundary.
+protovalidate-buffa = { version = "0.7", default-features = false }
 # The filter dimension is plain CEL. Only a schema with a List request needs
 # this; the plugin names the crate exactly when it emits a filter parser.
 cel = { version = "0.14", default-features = false }

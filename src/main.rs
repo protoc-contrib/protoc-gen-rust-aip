@@ -71,6 +71,11 @@ fn parse_options(parameter: &str) -> emit::Options {
                     options.packaging = value;
                 }
             }
+            "views" => {
+                if let Ok(value) = value.trim().parse() {
+                    options.views = value;
+                }
+            }
             _ => {}
         }
     }
@@ -97,6 +102,15 @@ mod tests {
         assert!(parse_options("").packaging);
         assert!(parse_options("packaging=true").packaging);
         assert!(!parse_options("proto_module=crate::buffa,packaging=false").packaging);
+    }
+
+    #[test]
+    fn view_accessors_are_off_unless_asked_for() {
+        // Off by default: a view type this schema did not generate is a
+        // compile error in the consumer, not a missing method.
+        assert!(!parse_options("").views);
+        assert!(parse_options("views=true").views);
+        assert!(!parse_options("views=false").views);
     }
 
     #[test]

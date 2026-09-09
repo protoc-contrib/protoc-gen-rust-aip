@@ -42,7 +42,7 @@
             # changes whenever the pinned aip-rs commit does, and `nix build`
             # prints the replacement when it stops matching.
             outputHashes = {
-              "aip-rs-0.0.0" = "sha256-OBwBnkzFE0GrJSv5pnGiTE//BngLxmH+/yi+LK5MZ1w=";
+              "aip-rs-0.0.0" = "sha256-qxi336PdrAMHtyaIbqKs9GmcEwgAM/+k7QmeUJFrmyc=";
             };
           };
 

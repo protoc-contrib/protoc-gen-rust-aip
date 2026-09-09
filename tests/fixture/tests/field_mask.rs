@@ -1,6 +1,8 @@
 //! Exercises the AIP-134 `update_mask` check.
 
-use aip_fixture::proto::example::v1::{Address, Carrier, Shipment, UpdateShipmentRequest};
+use aip_fixture::proto::example::v1::{
+    Address, Carrier, Shipment, UpdateShipmentRequest, UpdateShipmentRequestOwnedView,
+};
 use buffa::MessageField;
 
 fn request(paths: &[&str]) -> UpdateShipmentRequest {
@@ -114,7 +116,38 @@ fn every_offending_path_is_reported_and_named() {
         .validate_update_mask()
         .unwrap_err();
 
-    assert_eq!(error.field(), "update_mask");
-    assert_eq!(error.paths(), ["create_time", "carrier.scac"]);
-    assert!(error.to_string().starts_with("invalid update_mask: "));
+    assert_eq!(error.violations.len(), 2);
+    assert!(error.to_string().contains("`create_time`"));
+    assert!(error.to_string().contains("`carrier.scac`"));
+    // A defect in the validator, not in the request -- neither slot is set.
+    assert!(error.compile_error.is_none());
+    assert!(error.runtime_error.is_none());
+}
+
+#[test]
+fn a_violation_points_at_the_path_that_was_rejected() {
+    // Indistinguishable from a violation the protovalidate plugin emits: same
+    // field-path spelling, so a client cannot tell which rules were transpiled
+    // from buf.validate and which were generated from field_behavior.
+    let error = request(&["reference", "create_time"])
+        .validate_update_mask()
+        .unwrap_err();
+
+    assert_eq!(
+        error.violations[0].field.to_string(),
+        "update_mask.paths[1]"
+    );
+    assert_eq!(error.violations[0].rule_id, "update_mask.mutable_paths");
+}
+
+#[test]
+fn the_check_is_emitted_for_the_view_a_handler_actually_holds() {
+    // A connectrpc handler is passed a ServiceRequest that derefs to the view,
+    // so an accessor only on the owned message is one it cannot reach. This is
+    // what `views=true` is for.
+    let owned = request(&["reference", "create_time"]);
+    let borrowed = UpdateShipmentRequestOwnedView::from_owned(&owned).unwrap();
+    let error = borrowed.view().validate_update_mask().unwrap_err();
+    assert_eq!(error.violations.len(), 1);
+    assert!(error.to_string().contains("`create_time`"));
 }

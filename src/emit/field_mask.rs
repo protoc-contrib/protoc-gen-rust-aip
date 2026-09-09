@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
-use super::{doc, short_name, type_path_in};
+use super::{doc, impl_for, short_name, type_path_in};
 use crate::messages::{Field, Index, Kind, Message};
 use crate::scan::Registry;
 
@@ -27,6 +27,15 @@ const FIELD_MASK: &str = ".google.protobuf.FieldMask";
 
 /// The field name AIP-134 gives that mask.
 const UPDATE_MASK: &str = "update_mask";
+
+/// Field number of `paths` on `google.protobuf.FieldMask`.
+const PATHS_NUMBER: i32 = 1;
+
+/// The rule id a rejected path is reported under.
+///
+/// Named the way a `buf.validate` CEL rule would be, since that is where this
+/// rule would live if protovalidate-buffa's transpiler could compile it.
+const RULE_ID: &str = "update_mask.mutable_paths";
 
 /// What the pass worked out for one request.
 pub struct Updates {
@@ -163,6 +172,7 @@ pub fn emit_file(
     index: &Index,
     updates: &Updates,
     generated: &BTreeSet<String>,
+    views: bool,
 ) -> TokenStream {
     let blocks: Vec<TokenStream> = index
         .in_file(file)
@@ -174,7 +184,7 @@ pub fn emit_file(
             let request = updates
                 .requests
                 .get(&message.fqn)
-                .map(|resource| emit_request(message, index, resource));
+                .map(|resource| emit_request(message, index, resource, views));
             (checker.is_some() || request.is_some()).then(|| quote! { #checker #request })
         })
         .collect();
@@ -280,51 +290,123 @@ fn emit_checker(
 }
 
 /// `validate_update_mask` on the request carrying the mask.
-fn emit_request(message: &Message, index: &Index, resource: &str) -> TokenStream {
+///
+/// Reports a `protovalidate_buffa::ValidationError` rather than an error of its
+/// own, because that is what this is: a rule about a field, on a request whose
+/// other rules are already protovalidate's. A bad mask then reaches the client
+/// as an ordinary violation — same `invalid_argument`, same
+/// `update_mask.paths[1]` field path — and a client cannot tell which rules were
+/// transpiled from `buf.validate` and which were generated from
+/// `google.api.field_behavior`.
+///
+/// The rule cannot be written in the schema instead. It needs to say "every path
+/// is one of these", and protovalidate-buffa transpiles CEL ahead of time:
+/// `this.paths.all(...)` is outside the subset it supports.
+///
+/// An inherent method, not a `Validate` impl. The protovalidate plugin already
+/// owns `Validate` for this type, and a second impl of the same trait for the
+/// same type is a coherence error; suppressing the generated one would mean
+/// hand-maintaining the rules the schema does declare.
+fn emit_request(message: &Message, index: &Index, resource: &str, views: bool) -> TokenStream {
     let path: TokenStream = message
         .rust_path
         .parse()
         .expect("a message path built from proto identifiers is a valid Rust path");
     let mask = buffa_codegen::idents::make_field_ident(UPDATE_MASK);
     let mask_name = Literal::string(UPDATE_MASK);
+    let mask_number = Literal::i32_suffixed(
+        message
+            .fields
+            .iter()
+            .find(|field| field.name == UPDATE_MASK)
+            .map_or(0, |field| field.number),
+    );
     let target: TokenStream = type_path_in(message, index, resource);
 
     let short = short_name(resource);
+    let rule_id = Literal::string(RULE_ID);
     let method_doc = doc(&format!(
         "Checks that `update_mask` names only fields `{short}` allows \
          updating.\n\n\
          An unset mask names no paths and so cannot name a bad one; AIP-134 \
          reads it as every writable field, which is \
          [`MUTABLE_PATHS`]({short}::MUTABLE_PATHS). An empty one is the same.\n\n\
+         Not run by `Validate::validate`, and so not by \
+         `#[protovalidate_buffa::connect_impl]` either — the protovalidate \
+         plugin owns that trait for this type. Call it alongside.\n\n\
          # Errors\n\n\
-         A [`FieldMaskError`](::aip::field_mask::FieldMaskError) naming every \
-         offending path rather than the first, so a client naming two bad paths \
-         is told about both.",
+         A `ValidationError` carrying one violation per offending path, each \
+         pointing at `{}[i]`, so a client naming two bad paths is told about \
+         both and gets the same error shape every other rule produces.",
+        format_args!("{UPDATE_MASK}.paths"),
     ));
 
-    quote! {
-        impl #path {
+    impl_for(
+        &path,
+        views,
+        &quote! {
             #method_doc
             pub fn validate_update_mask(
                 &self,
-            ) -> ::core::result::Result<(), ::aip::field_mask::FieldMaskError> {
+            ) -> ::core::result::Result<(), ::protovalidate_buffa::ValidationError> {
                 let ::core::option::Option::Some(mask) = self.#mask.as_option() else {
                     return ::core::result::Result::Ok(());
                 };
-                let rejected: ::std::vec::Vec<::std::string::String> = mask
+                let violations: ::std::vec::Vec<::protovalidate_buffa::Violation> = mask
                     .paths
                     .iter()
-                    .filter(|path| !#target::is_mutable_path(path))
-                    .map(::std::string::ToString::to_string)
+                    .enumerate()
+                    .filter(|(_, path)| !#target::is_mutable_path(path))
+                    .map(|(index, path)| ::protovalidate_buffa::Violation {
+                        field: ::protovalidate_buffa::FieldPath {
+                            elements: ::std::vec![
+                                ::protovalidate_buffa::FieldPathElement {
+                                    field_number: ::core::option::Option::Some(#mask_number),
+                                    field_name: ::core::option::Option::Some(
+                                        ::std::borrow::Cow::Borrowed(#mask_name),
+                                    ),
+                                    field_type: ::core::option::Option::Some(
+                                        ::protovalidate_buffa::FieldType::Message,
+                                    ),
+                                    key_type: ::core::option::Option::None,
+                                    value_type: ::core::option::Option::None,
+                                    subscript: ::core::option::Option::None,
+                                },
+                                ::protovalidate_buffa::FieldPathElement {
+                                    field_number: ::core::option::Option::Some(#PATHS_NUMBER),
+                                    field_name: ::core::option::Option::Some(
+                                        ::std::borrow::Cow::Borrowed("paths"),
+                                    ),
+                                    field_type: ::core::option::Option::Some(
+                                        ::protovalidate_buffa::FieldType::String,
+                                    ),
+                                    key_type: ::core::option::Option::None,
+                                    value_type: ::core::option::Option::None,
+                                    subscript: ::core::option::Option::Some(
+                                        ::protovalidate_buffa::Subscript::Index(index as u64),
+                                    ),
+                                },
+                            ],
+                        },
+                        // Empty: there is no `buf.validate` rule to point back
+                        // at, which is the whole reason this is generated.
+                        rule: ::core::default::Default::default(),
+                        rule_id: ::std::borrow::Cow::Borrowed(#rule_id),
+                        message: ::std::borrow::Cow::Owned(
+                            ::std::format!("`{path}` is not an updatable field path"),
+                        ),
+                        for_key: false,
+                    })
                     .collect();
-                if rejected.is_empty() {
+                if violations.is_empty() {
                     return ::core::result::Result::Ok(());
                 }
-                ::core::result::Result::Err(::aip::field_mask::FieldMaskError::new(
-                    #mask_name,
-                    rejected,
-                ))
+                ::core::result::Result::Err(::protovalidate_buffa::ValidationError {
+                    violations,
+                    compile_error: ::core::option::Option::None,
+                    runtime_error: ::core::option::Option::None,
+                })
             }
-        }
-    }
+        },
+    )
 }

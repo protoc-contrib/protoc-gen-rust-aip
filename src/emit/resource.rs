@@ -17,7 +17,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::emit::{doc, package_depth};
+use crate::emit::{doc, impl_for, package_depth};
 use crate::idents::snake_case;
 use crate::messages::{Index, Kind};
 use crate::scan::{Format, Pattern, Reference, Registry, Resource, Segment};
@@ -34,26 +34,35 @@ const EXAMPLE_UUID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 /// Anything a schema can get wrong is rejected during the scan, so by the time
 /// a resource reaches the emitter there is nothing left to fail on.
 #[must_use]
-pub fn emit_file(file: &str, package: &str, registry: &Registry) -> TokenStream {
+pub fn emit_file(file: &str, package: &str, registry: &Registry, views: bool) -> TokenStream {
     let mut items = Vec::new();
     for resource in registry.by_file(file) {
-        items.push(emit_resource(resource, package, registry));
+        items.push(emit_resource(resource, package, registry, views));
     }
     for reference in registry.references.get(file).into_iter().flatten() {
-        items.push(emit_reference(reference, package, registry));
+        items.push(emit_reference(reference, package, registry, views));
     }
     quote! { #( #items )* }
 }
 
-fn emit_resource(resource: &Resource, package: &str, registry: &Registry) -> TokenStream {
+fn emit_resource(
+    resource: &Resource,
+    package: &str,
+    registry: &Registry,
+    views: bool,
+) -> TokenStream {
     if resource.is_multi_pattern() {
-        return emit_multi_pattern(resource, package, registry);
+        return emit_multi_pattern(resource, package, registry, views);
     }
     let pattern = &resource.patterns[0];
     let name_type = format_ident!("{}", resource.name_type());
     let variant = emit_pattern_struct(resource, &name_type, pattern, package, registry, None);
-    let message =
-        emit_message_accessors(resource, &name_type, &quote! { ::aip::resource::ScanError });
+    let message = emit_message_accessors(
+        resource,
+        &name_type,
+        &quote! { ::aip::resource::ScanError },
+        views,
+    );
     quote! {
         #variant
         #message
@@ -66,7 +75,12 @@ fn emit_resource(resource: &Resource, package: &str, registry: &Registry) -> Tok
 /// Go modelled this as a sealed interface; an enum is the Rust equivalent and a
 /// better one — a caller can exhaustively match the patterns, which is what
 /// deciding "which parent is this under?" actually needs.
-fn emit_multi_pattern(resource: &Resource, package: &str, registry: &Registry) -> TokenStream {
+fn emit_multi_pattern(
+    resource: &Resource,
+    package: &str,
+    registry: &Registry,
+    views: bool,
+) -> TokenStream {
     let name_type = format_ident!("{}", resource.name_type());
     let variants = variant_names(resource, registry);
 
@@ -188,6 +202,7 @@ fn emit_multi_pattern(resource: &Resource, package: &str, registry: &Registry) -
         resource,
         &name_type,
         &quote! { ::aip::resource::NoPatternError },
+        views,
     );
 
     quote! {
@@ -691,6 +706,7 @@ fn emit_message_accessors(
     resource: &Resource,
     name_type: &proc_macro2::Ident,
     error: &TokenStream,
+    views: bool,
 ) -> TokenStream {
     let Some(binding) = &resource.message else {
         return TokenStream::new();
@@ -719,8 +735,10 @@ fn emit_message_accessors(
          see [`{name_type}::parse_full`].",
         binding.name_field, resource.resource_type,
     ));
-    quote! {
-        impl #message {
+    impl_for(
+        &message,
+        views,
+        &quote! {
             #parse_doc
             pub fn parse_name(&self) -> ::core::result::Result<#name_type, #error> {
                 #name_type::parse(#value)
@@ -730,13 +748,18 @@ fn emit_message_accessors(
             pub fn parse_full_name(&self) -> ::core::result::Result<#name_type, #error> {
                 #name_type::parse_full(#value)
             }
-        }
-    }
+        },
+    )
 }
 
 /// The accessor for a `google.api.resource_reference` field: the referring
 /// message learns to parse its own field as the referent's name type.
-fn emit_reference(reference: &Reference, package: &str, registry: &Registry) -> TokenStream {
+fn emit_reference(
+    reference: &Reference,
+    package: &str,
+    registry: &Registry,
+    views: bool,
+) -> TokenStream {
     let resource = &registry.resources[reference.resource];
     let message: TokenStream = reference
         .rust_path
@@ -761,14 +784,16 @@ fn emit_reference(reference: &Reference, package: &str, registry: &Registry) -> 
          If the field does not hold a name of that resource.",
         reference.field_name, resource.resource_type,
     ));
-    quote! {
-        impl #message {
+    impl_for(
+        &message,
+        views,
+        &quote! {
             #method_doc
             pub fn #method(&self) -> ::core::result::Result<#name_path, #error> {
                 #name_path::parse(#value)
             }
-        }
-    }
+        },
+    )
 }
 
 /// The Rust type names for each pattern of a multi-pattern resource.
@@ -902,16 +927,21 @@ fn example(pattern: &Pattern) -> String {
 /// pattern it is creating under, so neither gets one rather than getting a
 /// guess.
 #[must_use]
-pub fn emit_create_ids(file: &str, index: &Index, registry: &Registry) -> TokenStream {
+pub fn emit_create_ids(file: &str, index: &Index, registry: &Registry, views: bool) -> TokenStream {
     let impls: Vec<TokenStream> = registry
         .resources
         .iter()
-        .filter_map(|resource| emit_create_id(file, index, resource))
+        .filter_map(|resource| emit_create_id(file, index, resource, views))
         .collect();
     quote! { #( #impls )* }
 }
 
-fn emit_create_id(file: &str, index: &Index, resource: &Resource) -> Option<TokenStream> {
+fn emit_create_id(
+    file: &str,
+    index: &Index,
+    resource: &Resource,
+    views: bool,
+) -> Option<TokenStream> {
     if resource.is_multi_pattern() {
         return None;
     }
@@ -973,8 +1003,10 @@ fn emit_create_id(file: &str, index: &Index, resource: &Resource) -> Option<Toke
         segment.name,
     ));
 
-    Some(quote! {
-        impl #path {
+    Some(impl_for(
+        &path,
+        views,
+        &quote! {
             #method_doc
             pub fn #method(
                 &self,
@@ -989,6 +1021,6 @@ fn emit_create_id(file: &str, index: &Index, resource: &Resource) -> Option<Toke
                     ),
                 }
             }
-        }
-    })
+        },
+    ))
 }
