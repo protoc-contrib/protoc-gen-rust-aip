@@ -17,8 +17,9 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::emit::doc;
+use crate::emit::{doc, package_depth};
 use crate::idents::snake_case;
+use crate::messages::{Index, Kind};
 use crate::scan::{Format, Pattern, Reference, Registry, Resource, Segment};
 
 /// The UUID standing in for a typed segment in a doc example.
@@ -839,14 +840,6 @@ fn type_path(from_package: &str, resource: &Resource, type_name: &str) -> TokenS
     quote! { #( #ups :: )* #( #downs :: )* #ident }
 }
 
-fn package_depth(package: &str) -> usize {
-    if package.is_empty() {
-        0
-    } else {
-        package.split('.').count()
-    }
-}
-
 /// The Rust type a variable segment is stored as.
 ///
 /// A `Uuid` costs the consumer a `uuid` dependency, but only a schema that
@@ -891,4 +884,111 @@ fn example(pattern: &Pattern) -> String {
         }
     }
     out
+}
+
+/// Emits the AIP-133 create-ID accessor for every resource whose create
+/// request is declared in `file`.
+///
+/// AIP-133 gives a create request a `{resource}_id` the caller may propose and
+/// may leave empty, in which case the *server* assigns one. That the ID is a
+/// UUID is a schema fact — `google.api.field_info.format = UUID4`, the same
+/// annotation that types the segment on the name — but that an empty one means
+/// "mint one" is an AIP fact, and it is the same on every such request. Every
+/// consumer was writing it out by hand.
+///
+/// Only for a resource with one pattern and a UUID-typed own ID. A `String` ID
+/// has no minting rule the schema states — what a server generates is its own
+/// business — and a multi-pattern resource's create request does not say which
+/// pattern it is creating under, so neither gets one rather than getting a
+/// guess.
+#[must_use]
+pub fn emit_create_ids(file: &str, index: &Index, registry: &Registry) -> TokenStream {
+    let impls: Vec<TokenStream> = registry
+        .resources
+        .iter()
+        .filter_map(|resource| emit_create_id(file, index, resource))
+        .collect();
+    quote! { #( #impls )* }
+}
+
+fn emit_create_id(file: &str, index: &Index, resource: &Resource) -> Option<TokenStream> {
+    if resource.is_multi_pattern() {
+        return None;
+    }
+    // The resource's own ID is the last variable segment of its only pattern;
+    // the ones before it belong to its parents, which their own create requests
+    // mint.
+    let segment = resource
+        .patterns
+        .first()?
+        .segments
+        .iter()
+        .rev()
+        .find(|segment| segment.variable)?;
+    if segment.format != Format::Uuid {
+        return None;
+    }
+
+    // AIP-133 names the request after the resource, which is also how the
+    // format was found in the first place -- see `scan::create_requests`.
+    let request_fqn = format!(".{}.Create{}Request", resource.package, resource.type_name);
+    let request = index.get(&request_fqn)?;
+    if request.source_file != file {
+        return None;
+    }
+    let field_name = format!("{}_id", snake_case(&segment.name));
+    let field = request
+        .fields
+        .iter()
+        .find(|field| field.name == field_name && field.kind == Kind::String)?;
+
+    let path: TokenStream = request
+        .rust_path
+        .parse()
+        .expect("a message path built from proto identifiers is a valid Rust path");
+    let ident = buffa_codegen::idents::make_field_ident(&field.name);
+    let method = format_ident!("{}_or_new", field.name);
+    let name_type = format_ident!("{}", resource.name_type());
+    let variable = Literal::string(&segment.name);
+
+    let method_doc = doc(&format!(
+        "The ID for the `{}` being created: the one the caller proposed, or a \
+         fresh v4 UUID when they left `{}` empty.\n\n\
+         AIP-133: an empty `{}` means the server assigns one. The field holds a \
+         bare ID rather than a resource name, so there is no pattern to scan — \
+         build the name from the result with `{} {{ {} }}`.\n\n\
+         Emitted because the schema types this ID as a UUID, through \
+         `google.api.field_info`. A `string` ID gets no accessor: what a server \
+         generates for one is not something the schema states.\n\n\
+         # Errors\n\n\
+         If the caller proposed an ID that is not a UUID. Reported as the same \
+         [`ScanError`](::aip::resource::ScanError) an unparseable `{}` segment \
+         produces when reading a whole name, so a call site handles one error \
+         type either way.",
+        resource.resource_type,
+        field.name,
+        field.name,
+        resource.name_type(),
+        buffa_codegen::idents::make_field_ident(&format!("{}_id", snake_case(&segment.name))),
+        segment.name,
+    ));
+
+    Some(quote! {
+        impl #path {
+            #method_doc
+            pub fn #method(
+                &self,
+            ) -> ::core::result::Result<::uuid::Uuid, ::aip::resource::ScanError> {
+                if self.#ident.is_empty() {
+                    return ::core::result::Result::Ok(::uuid::Uuid::new_v4());
+                }
+                match <::uuid::Uuid as ::core::str::FromStr>::from_str(&self.#ident) {
+                    ::core::result::Result::Ok(value) => ::core::result::Result::Ok(value),
+                    ::core::result::Result::Err(error) => ::core::result::Result::Err(
+                        #name_type::compiled().invalid_value(&self.#ident, #variable, error),
+                    ),
+                }
+            }
+        }
+    })
 }

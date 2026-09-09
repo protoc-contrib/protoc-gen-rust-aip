@@ -66,6 +66,16 @@ pub struct Field {
     pub oneof: Option<String>,
     /// Annotated `google.api.field_behavior = OUTPUT_ONLY`.
     pub output_only: bool,
+    /// Annotated `google.api.field_behavior = IDENTIFIER`.
+    ///
+    /// The resource name itself. Server-assigned and selects the target of an
+    /// update, so it is not something an update may *write*.
+    pub identifier: bool,
+    /// Annotated `google.api.field_behavior = IMMUTABLE`.
+    ///
+    /// Settable on create and never afterwards, which for the purposes of an
+    /// `update_mask` is the same as not writable.
+    pub immutable: bool,
     /// For a map field, the fully-qualified type of its value if that value is
     /// a message, else `None`. A map is a repeated field of a generated entry
     /// message, which nothing should ever see.
@@ -252,6 +262,8 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str]) -> Field {
         proto3_optional,
         oneof,
         output_only: has_behavior(field, FieldBehavior::OUTPUT_ONLY),
+        identifier: has_behavior(field, FieldBehavior::IDENTIFIER),
+        immutable: has_behavior(field, FieldBehavior::IMMUTABLE),
         map_value: None,
         is_map: false,
     }

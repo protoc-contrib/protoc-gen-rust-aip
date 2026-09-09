@@ -8,6 +8,7 @@
 //! so several extending the same package can share a directory.
 
 pub mod behavior;
+pub mod field_mask;
 pub mod query;
 pub mod resource;
 
@@ -21,7 +22,7 @@ use buffa_codegen::generated::{
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::messages::Index;
+use crate::messages::{Index, Message};
 use crate::scan::Registry;
 
 /// The header on every emitted file.
@@ -97,6 +98,7 @@ pub fn render(
     let generated: BTreeSet<String> = request.file_to_generate.iter().cloned().collect();
     let walks = behavior::plan(index, &generated);
     let lists = query::plan(index);
+    let updates = field_mask::plan(index, registry, &generated);
 
     // Proto package to what each of its files emitted, concatenated in
     // `file_to_generate` order so the output is stable across runs.
@@ -109,15 +111,22 @@ pub fn render(
         let package = descriptor.package.clone().unwrap_or_default();
 
         let resources = resource::emit_file(name, &package, registry);
+        let creates = resource::emit_create_ids(name, index, registry);
         let behaviors = behavior::emit_file(name, index, &walks, &generated);
+        let masks = field_mask::emit_file(name, index, &updates, &generated);
         let queries = query::emit_file(name, index, &lists, &generated);
-        if resources.is_empty() && behaviors.is_empty() && queries.is_empty() {
+        if resources.is_empty()
+            && creates.is_empty()
+            && behaviors.is_empty()
+            && masks.is_empty()
+            && queries.is_empty()
+        {
             continue;
         }
         by_package
             .entry(package)
             .or_default()
-            .push(quote! { #resources #behaviors #queries });
+            .push(quote! { #resources #creates #behaviors #masks #queries });
     }
 
     let mut files = Vec::new();
@@ -180,6 +189,58 @@ fn format(tokens: &TokenStream, label: &str) -> Result<String> {
         )
     })?;
     Ok(format!("{HEADER}{}", prettyplease::unparse(&parsed)))
+}
+
+/// The last segment of a fully-qualified proto name.
+fn short_name(fqn: &str) -> &str {
+    fqn.rsplit('.').next().unwrap_or(fqn)
+}
+
+/// How many `super` hops reach the root of the emitted tree from `package`.
+fn package_depth(package: &str) -> usize {
+    if package.is_empty() {
+        0
+    } else {
+        package.split('.').count()
+    }
+}
+
+/// The path by which code emitted into `from`'s file names the message `target`.
+///
+/// Within one package the short path is enough. Across packages it walks up to
+/// the root of the emitted module tree and back down, so it resolves wherever
+/// the consumer mounts that tree -- an absolute `crate::` path would have to be
+/// configured, and would be wrong the moment it was not.
+///
+/// The same rule [`resource::type_path`] applies to name types, over the message
+/// index rather than the resource registry.
+fn type_path_in(from: &Message, index: &Index, target: &str) -> TokenStream {
+    let Some(message) = index.get(target) else {
+        // Unreachable for a target the caller took from the index, which is
+        // every caller; an unresolvable name is better as a compile error in
+        // the consumer than as a silently dropped method.
+        let name: TokenStream = short_name(target)
+            .parse()
+            .expect("a proto identifier is a valid Rust identifier");
+        return name;
+    };
+    let path: TokenStream = message
+        .rust_path
+        .parse()
+        .expect("a message path built from proto identifiers is a valid Rust path");
+    if message.package == from.package {
+        return path;
+    }
+    let ups = std::iter::repeat_n(quote! { super }, package_depth(&from.package));
+    let downs = message
+        .package
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let segment = format_ident!("{}", buffa_codegen::idents::escape_mod_ident(segment));
+            quote! { #segment }
+        });
+    quote! { #( #ups :: )* #( #downs :: )* #path }
 }
 
 /// Renders `text` as a doc comment.

@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::emit::doc;
+use crate::emit::{doc, short_name};
 use crate::messages::{Field, Index, Kind, Message};
 
 /// The well-known messages with a total order, and so a CEL type. Every other
@@ -412,11 +412,6 @@ fn emit_query_struct(
 fn query_type(fqn: &str) -> String {
     let name = short_name(fqn);
     format!("{}Query", name.strip_suffix("Request").unwrap_or(name))
-}
-
-/// The last segment of a fully-qualified proto name.
-fn short_name(fqn: &str) -> &str {
-    fqn.rsplit('.').next().unwrap_or(fqn)
 }
 
 #[cfg(test)]

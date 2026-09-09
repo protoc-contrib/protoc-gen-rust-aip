@@ -15,14 +15,13 @@ All three passes are implemented.
 | Pass | Covers |
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
+| Create IDs | AIP-133 `{resource}_id`: the proposed ID, or a minted one |
 | Query helpers | `filter`, `order_by` and `page_token` per List request, plus the combined `parse_query` |
+| `update_mask` | AIP-134: which paths a resource allows, and the check against them |
 | `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
 
-Still missing, and tracked in [Field
-behavior](#field-behavior-clearing-is-generated-validating-need-not-be): the
-**read-only** halves of AIP-203 and AIP-134 — validating `REQUIRED` fields and
-checking `update_mask` paths. Those need no mutation, so they belong in
-`aip-rs` rather than here, and `aip-rs` does not have them yet.
+`REQUIRED` is **not** generated, deliberately — see [Field
+behavior](#field-behavior-clearing-is-generated-validating-is-protovalidates).
 
 **One deviation from the Go implementation, forced by the ecosystem:**
 `cel-rust` has no type checker, so a `filter` is checked by *reference* — every
@@ -128,7 +127,69 @@ request carrying a map produces an unstable checksum and rejects every token.
 The generated doc comment says so on any request where it applies; configure
 that field as a `BTreeMap` in the buffa codegen.
 
-### Field behavior: clearing is generated, validating need not be
+### The `update_mask` check
+
+A request is an update request when it carries a `google.protobuf.FieldMask`
+called `update_mask` **and exactly one other message field whose type is a
+declared resource**. Recognised by shape, like a List request — a message with
+the shape and not the AIP-134 name still works, and one with the name and not
+the shape is not half-supported.
+
+On the resource, which fields an update may write, read off
+`google.api.field_behavior`: everything not `OUTPUT_ONLY`, `IDENTIFIER` or
+`IMMUTABLE`. The three are one question — the server owns it, it selects the
+target rather than being part of it, or it was settable once on create.
+
+```rust
+impl Shipment {
+    pub const MUTABLE_PATHS: &'static [&'static str];   // top-level, = an empty mask
+    pub fn is_mutable_path(path: &str) -> bool;         // at any depth
+}
+
+impl UpdateShipmentRequest {
+    pub fn validate_update_mask(&self) -> Result<(), aip::field_mask::FieldMaskError>;
+}
+```
+
+A nested path is **walked, not looked up**. Enumerating every dotted path a
+mask could name is unbounded the moment a schema has a message that can reach
+itself; recursing on the path the client sent is finite by construction, so a
+cyclic schema costs nothing and there is no depth limit to tune.
+
+`carrier.name` resolves when `carrier` is a writable message field and `name`
+is writable on `Carrier`. Naming `carrier` alone is writable too — replacing a
+subtree is writing it. A repeated or map field is writable as a whole, but is
+not a way down: an AIP-134 mask addresses fields, not entries.
+
+A checker is emitted for each updated resource and for every message a mask
+path can reach from one, so `Address` gets one by virtue of being what
+`Shipment.origin` holds, without declaring a resource or having an update
+request of its own.
+
+### Create IDs, per AIP-133
+
+```rust
+impl CreateCollectionRequest {
+    pub fn collection_id_or_new(&self) -> Result<uuid::Uuid, aip::resource::ScanError>;
+}
+```
+
+An empty `{resource}_id` means the server assigns one. That the ID is a UUID is
+a schema fact — the same `google.api.field_info` annotation that types the
+segment on `CollectionName`; that an empty one means "mint one" is an AIP fact,
+identical on every such request, and every consumer was writing it out by hand.
+
+Only for a single-pattern resource with a UUID-typed own ID. A `string` ID has
+no minting rule the schema states, and a multi-pattern resource's create request
+does not say which pattern it is creating under, so neither gets an accessor
+rather than getting a guess. A failure is reported as the same `ScanError` an
+unparseable segment produces when reading a whole name, so a call site handles
+one error type either way.
+
+Needs the `uuid` crate's `v4` feature, which is the only feature this plugin's
+output requires beyond a crate's defaults.
+
+### Field behavior: clearing is generated, validating is protovalidate's
 
 The OUTPUT_ONLY walk is generated, not reflective — and not as an
 optimisation. buffa 0.9 has **no reflective path to mutation in any mode**:
@@ -153,27 +214,27 @@ message with nothing output-only beneath it gets no walk at all and is never
 descended into. A `oneof` is cleared entirely when the member that is set is
 the output-only one, since there is no individual field to assign to.
 
-Reads are a genuine choice, and are **not built yet on either side**.
-Validating REQUIRED fields and checking update_mask paths are read-only, so
-aip-rs can do them reflectively the way aip-go does. Generating them is also reasonable — field-mask validation
-becomes a match against a path list known at codegen time, needing no
-descriptor lookup at all — but it is a size-versus-runtime tradeoff rather
-than a constraint. Prefer the runtime unless it measures badly, so the two
-implementations stay structurally comparable.
+Revisit the split if a buffa release lands `reflect_mut`.
 
-Revisit the whole split if a buffa release lands `reflect_mut`.
+**`REQUIRED` is not generated here, and should not be.** A schema that marks a
+field `(google.api.field_behavior) = REQUIRED` almost always also constrains it
+with `(buf.validate.field).required` — or a `min_len`, for a presence-less
+scalar — and a server running protovalidate already enforces that. A second
+check generated from the AIP annotation could only drift out of agreement with
+the one that actually runs, which is the same argument this plugin makes
+against [an allow-list in the `.proto`](#query-helpers-per-list-request).
 
-Two semantics worth carrying over from aip-go, because both were bugs there
-first:
+What *is* worth having is a lint that the two annotations agree: a field marked
+REQUIRED with nothing in `buf.validate` enforcing it is a field the schema
+claims is required and no server checks. That belongs in
+[protoc-gen-aip-lint](https://github.com/protoc-contrib/protoc-gen-aip-lint),
+not here — a linter reports, a generator emits.
 
-- **Respect explicit presence.** A field with presence — a message, an
-  `optional` scalar, a oneof member — is judged present or absent, so an
-  explicit `false` satisfies a REQUIRED `optional bool`. A presence-less
-  proto3 scalar has no way to distinguish unset from zero, so a REQUIRED one
-  must be non-zero.
-- **Field-mask coverage matches by path prefix.** A mask of `["carrier"]`
-  covers `carrier.name`: replacing a subtree means the whole subtree has to be
-  valid.
+The presence rule such a lint has to respect, carried over from aip-go because
+it was a bug there first: a field with presence — a message, an `optional`
+scalar, a oneof member — is judged present or absent, so an explicit `false`
+satisfies a REQUIRED `optional bool`. A presence-less proto3 scalar cannot tell
+unset from zero, so a REQUIRED one needs a rule that rejects the zero value.
 
 ### Resource names
 
