@@ -22,7 +22,7 @@ use buffa_codegen::generated::{
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::messages::{Index, Message};
+use crate::messages::Index;
 use crate::scan::Registry;
 
 /// The header on every emitted file.
@@ -220,44 +220,6 @@ fn package_depth(package: &str) -> usize {
     } else {
         package.split('.').count()
     }
-}
-
-/// The path by which code emitted into `from`'s file names the message `target`.
-///
-/// Within one package the short path is enough. Across packages it walks up to
-/// the root of the emitted module tree and back down, so it resolves wherever
-/// the consumer mounts that tree -- an absolute `crate::` path would have to be
-/// configured, and would be wrong the moment it was not.
-///
-/// The same rule [`resource::type_path`] applies to name types, over the message
-/// index rather than the resource registry.
-fn type_path_in(from: &Message, index: &Index, target: &str) -> TokenStream {
-    let Some(message) = index.get(target) else {
-        // Unreachable for a target the caller took from the index, which is
-        // every caller; an unresolvable name is better as a compile error in
-        // the consumer than as a silently dropped method.
-        let name: TokenStream = short_name(target)
-            .parse()
-            .expect("a proto identifier is a valid Rust identifier");
-        return name;
-    };
-    let path: TokenStream = message
-        .rust_path
-        .parse()
-        .expect("a message path built from proto identifiers is a valid Rust path");
-    if message.package == from.package {
-        return path;
-    }
-    let ups = std::iter::repeat_n(quote! { super }, package_depth(&from.package));
-    let downs = message
-        .package
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let segment = format_ident!("{}", buffa_codegen::idents::escape_mod_ident(segment));
-            quote! { #segment }
-        });
-    quote! { #( #ups :: )* #( #downs :: )* #path }
 }
 
 /// Emits `body` as an inherent impl on `path`, and again on its buffa view type
