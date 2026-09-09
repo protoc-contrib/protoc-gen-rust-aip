@@ -1,6 +1,6 @@
 [package]
 name = "aip-fixture"
-version = "0.0.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 description = "Compiles the test schema with both buffa and this plugin, so the generated code is type-checked and exercised rather than only diffed against a golden file."
