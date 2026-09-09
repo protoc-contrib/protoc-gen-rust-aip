@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aip-fixture"
-version = "0.0.0"
+version = "0.2.0"
 dependencies = [
  "aip-rs",
  "anyhow",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "protoc-gen-rust-aip"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "buffa",
