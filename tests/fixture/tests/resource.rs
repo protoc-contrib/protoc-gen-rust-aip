@@ -242,3 +242,86 @@ fn the_nil_uuid_is_rejected_as_a_degenerate_id() {
             .is_ok()
     );
 }
+
+// --- AIP-133 create IDs -----------------------------------------------------
+
+#[test]
+fn a_create_request_keeps_the_id_the_caller_proposed() {
+    let request = proto::example::v1::CreateCollectionRequest {
+        collection_id: ID.to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        request.collection_id_or_new().unwrap(),
+        uuid::Uuid::parse_str(ID).unwrap()
+    );
+}
+
+#[test]
+fn an_empty_create_id_is_minted_by_the_server() {
+    // AIP-133: empty means the server assigns one, so two calls differ.
+    let request = proto::example::v1::CreateCollectionRequest::default();
+    assert_ne!(
+        request.collection_id_or_new().unwrap(),
+        request.collection_id_or_new().unwrap()
+    );
+}
+
+#[test]
+fn a_proposed_id_that_is_not_a_uuid_fails_as_that_segment() {
+    let request = proto::example::v1::CreateCollectionRequest {
+        collection_id: "not-a-uuid".to_owned(),
+        ..Default::default()
+    };
+    let error = request.collection_id_or_new().unwrap_err();
+    // The same error a whole name carrying that ID would produce, rather than
+    // a second error type at the call site.
+    assert!(matches!(
+        error.kind(),
+        aip::resource::ScanErrorKind::InvalidValue { name, .. } if name == "collection"
+    ));
+}
+
+#[test]
+fn a_child_gets_an_accessor_for_its_own_id_only() {
+    // Item's own {item} is UUID-typed, so CreateItemRequest mints it. Its
+    // {organization} comes from the parent's create request, which is what
+    // types it -- there is no `organization_id_or_new` here.
+    let request = proto::example::v1::CreateItemRequest {
+        item_id: ID.to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        request.item_id_or_new().unwrap(),
+        uuid::Uuid::parse_str(ID).unwrap()
+    );
+}
+
+#[test]
+fn the_accessors_are_emitted_for_views_too() {
+    // Same three accessors, on the borrowed form: a name field, a reference,
+    // and the AIP-133 create ID.
+    let book = proto::example::v1::Book {
+        name: "publishers/p1/books/b1".to_owned(),
+        ..Default::default()
+    };
+    let book = proto::example::v1::BookOwnedView::from_owned(&book).unwrap();
+    assert!(book.view().parse_name().is_ok());
+
+    let request = proto::example::v1::CreateBookRequest {
+        parent: "publishers/p1".to_owned(),
+        ..Default::default()
+    };
+    let request = proto::example::v1::CreateBookRequestOwnedView::from_owned(&request).unwrap();
+    assert_eq!(request.view().parse_parent().unwrap().publisher_id, "p1");
+
+    let create = proto::example::v1::CreateCollectionRequest {
+        collection_id: ID.to_owned(),
+        ..Default::default()
+    };
+    let create = proto::example::v1::CreateCollectionRequestOwnedView::from_owned(&create).unwrap();
+    assert_eq!(
+        create.view().collection_id_or_new().unwrap(),
+        uuid::Uuid::parse_str(ID).unwrap()
+    );
+}

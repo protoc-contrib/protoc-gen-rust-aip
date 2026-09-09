@@ -25,8 +25,9 @@ buffa-types = "0.9.2"
 # this crate exists to prove is not the case.
 aip = { package = "aip-rs", git = "https://github.com/protoc-contrib/aip-rs" }
 # Only a schema that annotates an ID as UUID4 needs this; the plugin names the
-# crate in generated code exactly when it types a segment as one.
-uuid = "1"
+# crate in generated code exactly when it types a segment as one. `v4` because
+# the AIP-133 create-ID accessor mints one when the caller proposes none.
+uuid = { version = "1", features = ["v4"] }
 # The filter dimension is plain CEL. Only a schema with a List request needs
 # this; the plugin names the crate exactly when it emits a filter parser.
 cel = { version = "0.14", default-features = false }

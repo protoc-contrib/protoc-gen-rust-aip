@@ -61,7 +61,9 @@ fn main() -> Result<()> {
         // The annotations are read by the plugin, not used as field types.
         .exclude_package("google.api")
         .exclude_package("google.protobuf")
-        .generate_views(false)
+        // On, so the view accessors below are type-checked against real view
+        // types rather than only emitted.
+        .generate_views(true)
         .include_file("_include.rs")
         .compile()
         .map_err(|error| anyhow::anyhow!("buffa codegen: {error}"))?;
@@ -75,6 +77,13 @@ fn main() -> Result<()> {
         &index,
         &emit::Options {
             proto_module: "crate::proto".to_owned(),
+            // The fixture mounts the whole tree at `aip_gen`, so it wants the
+            // packaging output. A consumer that splices the per-file output
+            // into its own module tree turns this off; see the README.
+            packaging: true,
+            // buffa generated views above, so the accessors are emitted for
+            // them too -- which is what a connectrpc handler holds.
+            views: true,
         },
     )?;
 

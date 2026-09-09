@@ -55,15 +55,28 @@ fn run(request: &CodeGeneratorRequest) -> Result<Vec<File>> {
 /// plugin parameter.
 ///
 /// An unknown key is ignored rather than rejected, so a `buf.gen.yaml` written
-/// against a later version of this plugin still works against this one.
+/// against a later version of this plugin still works against this one. A
+/// boolean whose value is neither `true` nor `false` is ignored the same way,
+/// and keeps the default.
 fn parse_options(parameter: &str) -> emit::Options {
     let mut options = emit::Options::default();
     for part in parameter.split(',') {
         let Some((key, value)) = part.trim().split_once('=') else {
             continue;
         };
-        if key.trim() == "proto_module" {
-            value.trim().clone_into(&mut options.proto_module);
+        match key.trim() {
+            "proto_module" => value.trim().clone_into(&mut options.proto_module),
+            "packaging" => {
+                if let Ok(value) = value.trim().parse() {
+                    options.packaging = value;
+                }
+            }
+            "views" => {
+                if let Ok(value) = value.trim().parse() {
+                    options.views = value;
+                }
+            }
+            _ => {}
         }
     }
     options
@@ -82,5 +95,29 @@ mod tests {
     fn reads_the_proto_module_past_unknown_keys() {
         let options = parse_options("later_option=on,proto_module=crate::buffa,bare_flag");
         assert_eq!(options.proto_module, "crate::buffa");
+    }
+
+    #[test]
+    fn emits_the_packaging_tree_unless_asked_not_to() {
+        assert!(parse_options("").packaging);
+        assert!(parse_options("packaging=true").packaging);
+        assert!(!parse_options("proto_module=crate::buffa,packaging=false").packaging);
+    }
+
+    #[test]
+    fn view_accessors_are_off_unless_asked_for() {
+        // Off by default: a view type this schema did not generate is a
+        // compile error in the consumer, not a missing method.
+        assert!(!parse_options("").views);
+        assert!(parse_options("views=true").views);
+        assert!(!parse_options("views=false").views);
+    }
+
+    #[test]
+    fn a_packaging_value_that_is_not_a_bool_keeps_the_default() {
+        // The same forgiving reading unknown keys get: a `buf.gen.yaml` is not
+        // worth failing a build over, and the default is the safe direction --
+        // an unused mod.rs, rather than a missing one.
+        assert!(parse_options("packaging=no").packaging);
     }
 }

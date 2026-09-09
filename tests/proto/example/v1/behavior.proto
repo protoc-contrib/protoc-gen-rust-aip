@@ -1,4 +1,5 @@
-// Fixture for the AIP-203 OUTPUT_ONLY clearing walk.
+// Fixture for the AIP-203 OUTPUT_ONLY clearing walk, and for MUTABLE_PATHS,
+// which reads the same annotations the other way round.
 //
 // Covers every shape the walk has to reach: a scalar, a message, a repeated
 // message, a map with message values, a nested message that is itself clean
@@ -8,9 +9,21 @@ syntax = "proto3";
 package example.v1;
 
 import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
 import "google/protobuf/timestamp.proto";
 
 message Shipment {
+  // A resource, so MUTABLE_PATHS is emitted for it.
+  option (google.api.resource) = {
+    type: "example.com/Shipment"
+    pattern: "shipments/{shipment}"
+  };
+
+  // The name selects the target of an update rather than being part of it, so
+  // IDENTIFIER is not writable -- the same answer OUTPUT_ONLY gets, by a
+  // different route.
+  string name = 11 [(google.api.field_behavior) = IDENTIFIER];
+
   // Client-settable.
   string reference = 1;
 

@@ -15,14 +15,13 @@ All three passes are implemented.
 | Pass | Covers |
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
+| Create IDs | AIP-133 `{resource}_id`: the proposed ID, or a minted one |
 | Query helpers | `filter`, `order_by` and `page_token` per List request, plus the combined `parse_query` |
+| `MUTABLE_PATHS` | AIP-134: which fields an update may write, for expanding an empty mask |
 | `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
 
-Still missing, and tracked in [Field
-behavior](#field-behavior-clearing-is-generated-validating-need-not-be): the
-**read-only** halves of AIP-203 and AIP-134 — validating `REQUIRED` fields and
-checking `update_mask` paths. Those need no mutation, so they belong in
-`aip-rs` rather than here, and `aip-rs` does not have them yet.
+`REQUIRED` is **not** generated, deliberately — see [Field
+behavior](#field-behavior-clearing-is-generated-validating-is-protovalidates).
 
 **One deviation from the Go implementation, forced by the ecosystem:**
 `cel-rust` has no type checker, so a `filter` is checked by *reference* — every
@@ -128,7 +127,69 @@ request carrying a map produces an unstable checksum and rejects every token.
 The generated doc comment says so on any request where it applies; configure
 that field as a `BTreeMap` in the buffa codegen.
 
-### Field behavior: clearing is generated, validating need not be
+### `MUTABLE_PATHS`, and what is *not* generated for AIP-134
+
+On each resource, which of its fields an update may write — everything not
+`OUTPUT_ONLY`, `IDENTIFIER` or `IMMUTABLE`. The three are one question, not
+three: the server owns it, it selects the target rather than being part of it,
+or it was settable once, on create.
+
+```rust
+impl Shipment {
+    pub const MUTABLE_PATHS: &'static [&'static str];
+}
+```
+
+**Validating a mask is not generated, and should not be.** That is
+`(buf.validate.field).field_mask.in`, which protovalidate-buffa implements as a
+first-class rule:
+
+```proto
+google.protobuf.FieldMask update_mask = 2 [
+  (buf.validate.field).field_mask.in = ["display_name", "description"]
+];
+```
+
+It already matches subpaths, already reports as an ordinary violation under rule
+id `field_mask.in`, and is already run by `#[protovalidate_buffa::connect_impl]`
+along with every other rule on the request. Anything emitted here would be a
+second implementation of the same rule, reported differently, that a handler had
+to remember to call. An earlier cut of this PR generated exactly that; it was
+removed.
+
+What protovalidate cannot do is **expand**. AIP-134 reads an absent or empty
+mask as every writable field, and a server has to turn that into a list of paths
+to write. That is what the constant is for, and deriving it from the schema is
+the point — a new writable field joins it without anyone remembering to.
+
+Which leaves the `field_mask.in` annotation restating what `field_behavior`
+already says. Keeping the two in step is a **lint's** job, the same one the
+`REQUIRED` case needs and for the same reason.
+
+### Create IDs, per AIP-133
+
+```rust
+impl CreateCollectionRequest {
+    pub fn collection_id_or_new(&self) -> Result<uuid::Uuid, aip::resource::ScanError>;
+}
+```
+
+An empty `{resource}_id` means the server assigns one. That the ID is a UUID is
+a schema fact — the same `google.api.field_info` annotation that types the
+segment on `CollectionName`; that an empty one means "mint one" is an AIP fact,
+identical on every such request, and every consumer was writing it out by hand.
+
+Only for a single-pattern resource with a UUID-typed own ID. A `string` ID has
+no minting rule the schema states, and a multi-pattern resource's create request
+does not say which pattern it is creating under, so neither gets an accessor
+rather than getting a guess. A failure is reported as the same `ScanError` an
+unparseable segment produces when reading a whole name, so a call site handles
+one error type either way.
+
+Needs the `uuid` crate's `v4` feature, which is the only feature this plugin's
+output requires beyond a crate's defaults.
+
+### Field behavior: clearing is generated, validating is protovalidate's
 
 The OUTPUT_ONLY walk is generated, not reflective — and not as an
 optimisation. buffa 0.9 has **no reflective path to mutation in any mode**:
@@ -153,27 +214,27 @@ message with nothing output-only beneath it gets no walk at all and is never
 descended into. A `oneof` is cleared entirely when the member that is set is
 the output-only one, since there is no individual field to assign to.
 
-Reads are a genuine choice, and are **not built yet on either side**.
-Validating REQUIRED fields and checking update_mask paths are read-only, so
-aip-rs can do them reflectively the way aip-go does. Generating them is also reasonable — field-mask validation
-becomes a match against a path list known at codegen time, needing no
-descriptor lookup at all — but it is a size-versus-runtime tradeoff rather
-than a constraint. Prefer the runtime unless it measures badly, so the two
-implementations stay structurally comparable.
+Revisit the split if a buffa release lands `reflect_mut`.
 
-Revisit the whole split if a buffa release lands `reflect_mut`.
+**`REQUIRED` is not generated here, and should not be.** A schema that marks a
+field `(google.api.field_behavior) = REQUIRED` almost always also constrains it
+with `(buf.validate.field).required` — or a `min_len`, for a presence-less
+scalar — and a server running protovalidate already enforces that. A second
+check generated from the AIP annotation could only drift out of agreement with
+the one that actually runs, which is the same argument this plugin makes
+against [an allow-list in the `.proto`](#query-helpers-per-list-request).
 
-Two semantics worth carrying over from aip-go, because both were bugs there
-first:
+What *is* worth having is a lint that the two annotations agree: a field marked
+REQUIRED with nothing in `buf.validate` enforcing it is a field the schema
+claims is required and no server checks. That belongs in
+[protoc-gen-aip-lint](https://github.com/protoc-contrib/protoc-gen-aip-lint),
+not here — a linter reports, a generator emits.
 
-- **Respect explicit presence.** A field with presence — a message, an
-  `optional` scalar, a oneof member — is judged present or absent, so an
-  explicit `false` satisfies a REQUIRED `optional bool`. A presence-less
-  proto3 scalar has no way to distinguish unset from zero, so a REQUIRED one
-  must be non-zero.
-- **Field-mask coverage matches by path prefix.** A mask of `["carrier"]`
-  covers `carrier.name`: replacing a subtree means the whole subtree has to be
-  valid.
+The presence rule such a lint has to respect, carried over from aip-go because
+it was a bug there first: a field with presence — a message, an `optional`
+scalar, a oneof member — is judged present or absent, so an explicit `false`
+satisfies a REQUIRED `optional bool`. A presence-less proto3 scalar cannot tell
+unset from zero, so a REQUIRED one needs a rule that rejects the zero value.
 
 ### Resource names
 
@@ -270,12 +331,14 @@ plugins:
       - proto_module=crate::buffa
 ```
 
-`strategy: all` is required, not cosmetic. The plugin emits one `mod.rs`
-mounting every package it generated for; under buf's default per-directory
-strategy each invocation would write a `mod.rs` covering only its own
-directory, and the last one would win. It also matters for
+`strategy: all` is required, not cosmetic. Output is one
+`<package>.aip.rs` per proto *package*, mirroring `protoc-gen-buffa` under
+`file_per_package=true`; under buf's default per-directory strategy a package
+spread over two directories would be generated twice, each invocation seeing
+half of it, and the second write would win. It also matters for
 `resource_reference`, which names its referent by *type string* and so can
-point at a resource in a file the referrer never imports.
+point at a resource in a file the referrer never imports — and for the single
+`mod.rs`, which has to mount every package at once.
 
 Mount the output with either `#[path]` or `include!` — the generated `mod.rs`
 carries no inner attributes, so both work:
@@ -285,6 +348,75 @@ pub mod aip {
     include!("aip/mod.rs");
 }
 ```
+
+### Views: `views=true`
+
+buffa's two-tier model gives every message a borrowed `FooView<'a>`, and a
+connectrpc handler is passed a `ServiceRequest` that derefs to *that*, not to
+the owned message. So an accessor emitted only on `Foo` is one a handler cannot
+reach:
+
+```rust
+async fn update_shipment(&self, ctx: RequestContext, request: ServiceRequest<'_, UpdateShipmentRequest>) {
+    request.validate_update_mask()?;   // needs views=true
+}
+```
+
+With `views=true` every read-only accessor — `parse_name`, `parse_full_name`,
+`parse_<reference>`, `<resource>_id_or_new`, `validate_update_mask` — is emitted
+for `FooView<'_>` as well. The bodies are token-identical: a view's field holds
+`&str` where the owned message holds `String`, and every operation these
+accessors perform is spelled the same for both.
+
+`clear_output_only` is not doubled. It takes `&mut self`, and a view does not
+own what it would clear.
+
+Off by default, and it has to be: nothing in a `CodeGeneratorRequest` says
+whether buffa generated views, and emitting `impl FooView<'_>` when it did not
+is a compile error in the consumer rather than a missing method.
+
+`MUTABLE_PATHS` and `is_mutable_path` are unaffected — they are associated items
+on the resource, and `is_mutable_path` takes a `&str`, so there is nothing for a
+view to borrow.
+
+### Or skip the packaging output: `packaging=false`
+
+The tree above is a parallel `example::v1` next to the buffa one. A consumer
+can instead put the resource names *beside* the resources, by writing the
+output into the same directory as the buffa codegen and including
+`<package>.aip.rs` into the module that already holds the message types:
+
+```yaml
+  - local: protoc-gen-rust-aip
+    out: src/buffa          # alongside protoc-gen-buffa's own output
+    strategy: all
+    opt:
+      - packaging=false
+```
+
+```rust
+pub mod v1 {
+    include!("example.v1.rs");        // protoc-gen-buffa
+    include!("example.v1.aip.rs");    // this plugin
+}
+```
+
+With `packaging=false` no `mod.rs` is emitted at all. That is not only
+tidiness: a `mod.rs` written into a directory that already has a hand-written
+one **replaces it**, and `buf generate` exits 0 without mentioning it.
+
+`proto_module` is then unread — it only ever appears in the module tree — so
+there is no second place for the consumer's layout to be described.
+
+Two constraints come with it:
+
+- **Single package.** A `<package>.aip.rs` names a same-package type by its
+  short name, but reaches another package with `super` hops counted from the
+  root of the tree that is no longer emitted. A multi-package schema has to
+  mount the tree.
+- **The file keeps its `use super::*`.** Harmless where the types are already
+  in scope; it is what makes the file work when the enclosing module brings
+  them in with a `use` instead.
 
 ## Development
 
