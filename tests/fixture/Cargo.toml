@@ -28,11 +28,6 @@ aip = { package = "aip-rs", git = "https://github.com/protoc-contrib/aip-rs" }
 # crate in generated code exactly when it types a segment as one. `v4` because
 # the AIP-133 create-ID accessor mints one when the caller proposes none.
 uuid = { version = "1", features = ["v4"] }
-# The AIP-134 mask check reports a protovalidate violation, so a schema with an
-# update request needs the runtime. Only that -- not the codegen plugin: this
-# crate emits the check itself and borrows protovalidate's error shape so a bad
-# mask is indistinguishable from any other rule violation at the boundary.
-protovalidate-buffa = { version = "0.7", default-features = false }
 # The filter dimension is plain CEL. Only a schema with a List request needs
 # this; the plugin names the crate exactly when it emits a filter parser.
 cel = { version = "0.14", default-features = false }

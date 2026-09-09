@@ -116,7 +116,6 @@ pub fn render(
     let generated: BTreeSet<String> = request.file_to_generate.iter().cloned().collect();
     let walks = behavior::plan(index, &generated);
     let lists = query::plan(index);
-    let updates = field_mask::plan(index, registry, &generated);
 
     // Proto package to what each of its files emitted, concatenated in
     // `file_to_generate` order so the output is stable across runs.
@@ -131,7 +130,7 @@ pub fn render(
         let resources = resource::emit_file(name, &package, registry, options.views);
         let creates = resource::emit_create_ids(name, index, registry, options.views);
         let behaviors = behavior::emit_file(name, index, &walks, &generated);
-        let masks = field_mask::emit_file(name, index, &updates, &generated, options.views);
+        let masks = field_mask::emit_file(name, index, registry);
         let queries = query::emit_file(name, index, &lists, &generated);
         if resources.is_empty()
             && creates.is_empty()

@@ -17,7 +17,7 @@ All three passes are implemented.
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or a minted one |
 | Query helpers | `filter`, `order_by` and `page_token` per List request, plus the combined `parse_query` |
-| `update_mask` | AIP-134: which paths a resource allows, and the check against them |
+| `MUTABLE_PATHS` | AIP-134: which fields an update may write, for expanding an empty mask |
 | `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
 
 `REQUIRED` is **not** generated, deliberately — see [Field
@@ -43,7 +43,6 @@ Only what a schema actually uses:
 | `buffa` | a List request has a `page_token` — the checksum marshals the request |
 | `cel` | a List request has a `filter` |
 | `uuid` | a resource ID is annotated `UUID4` |
-| [`protovalidate-buffa`](https://github.com/mathematic-inc/protovalidate-buffa) | a schema has an update request — the mask check reports a violation |
 
 
 ## What it generates
@@ -128,62 +127,44 @@ request carrying a map produces an unstable checksum and rejects every token.
 The generated doc comment says so on any request where it applies; configure
 that field as a `BTreeMap` in the buffa codegen.
 
-### The `update_mask` check
+### `MUTABLE_PATHS`, and what is *not* generated for AIP-134
 
-A request is an update request when it carries a `google.protobuf.FieldMask`
-called `update_mask` **and exactly one other message field whose type is a
-declared resource**. Recognised by shape, like a List request — a message with
-the shape and not the AIP-134 name still works, and one with the name and not
-the shape is not half-supported.
-
-On the resource, which fields an update may write, read off
-`google.api.field_behavior`: everything not `OUTPUT_ONLY`, `IDENTIFIER` or
-`IMMUTABLE`. The three are one question — the server owns it, it selects the
-target rather than being part of it, or it was settable once on create.
+On each resource, which of its fields an update may write — everything not
+`OUTPUT_ONLY`, `IDENTIFIER` or `IMMUTABLE`. The three are one question, not
+three: the server owns it, it selects the target rather than being part of it,
+or it was settable once, on create.
 
 ```rust
 impl Shipment {
-    pub const MUTABLE_PATHS: &'static [&'static str];   // top-level, = an empty mask
-    pub fn is_mutable_path(path: &str) -> bool;         // at any depth
-}
-
-impl UpdateShipmentRequest {
-    pub fn validate_update_mask(&self) -> Result<(), protovalidate_buffa::ValidationError>;
+    pub const MUTABLE_PATHS: &'static [&'static str];
 }
 ```
 
-**It reports a protovalidate violation**, because that is what it is: a rule
-about a field, on a request whose other rules are protovalidate's already. A bad
-mask reaches the client as an ordinary violation — same `invalid_argument`, same
-`update_mask.paths[1]` field path, under rule id `update_mask.mutable_paths` —
-so a client cannot tell which rules were transpiled from `buf.validate` and
-which were generated from `google.api.field_behavior`. The alternative, an error
-of this project's own, would have meant a second error shape at the boundary for
-no gain.
+**Validating a mask is not generated, and should not be.** That is
+`(buf.validate.field).field_mask.in`, which protovalidate-buffa implements as a
+first-class rule:
 
-The rule cannot be moved into the schema instead: it has to say "every path is
-one of these", and protovalidate-buffa transpiles CEL ahead of time —
-`this.paths.all(...)` is outside the subset it supports.
+```proto
+google.protobuf.FieldMask update_mask = 2 [
+  (buf.validate.field).field_mask.in = ["display_name", "description"]
+];
+```
 
-An **inherent method, not a `Validate` impl**. The protovalidate plugin already
-owns `Validate` for the request, and a second impl of one trait for one type is
-a coherence error. So `#[protovalidate_buffa::connect_impl]` does not run it;
-call it alongside, in the two or three handlers that take a mask.
+It already matches subpaths, already reports as an ordinary violation under rule
+id `field_mask.in`, and is already run by `#[protovalidate_buffa::connect_impl]`
+along with every other rule on the request. Anything emitted here would be a
+second implementation of the same rule, reported differently, that a handler had
+to remember to call. An earlier cut of this PR generated exactly that; it was
+removed.
 
-A nested path is **walked, not looked up**. Enumerating every dotted path a
-mask could name is unbounded the moment a schema has a message that can reach
-itself; recursing on the path the client sent is finite by construction, so a
-cyclic schema costs nothing and there is no depth limit to tune.
+What protovalidate cannot do is **expand**. AIP-134 reads an absent or empty
+mask as every writable field, and a server has to turn that into a list of paths
+to write. That is what the constant is for, and deriving it from the schema is
+the point — a new writable field joins it without anyone remembering to.
 
-`carrier.name` resolves when `carrier` is a writable message field and `name`
-is writable on `Carrier`. Naming `carrier` alone is writable too — replacing a
-subtree is writing it. A repeated or map field is writable as a whole, but is
-not a way down: an AIP-134 mask addresses fields, not entries.
-
-A checker is emitted for each updated resource and for every message a mask
-path can reach from one, so `Address` gets one by virtue of being what
-`Shipment.origin` holds, without declaring a resource or having an update
-request of its own.
+Which leaves the `field_mask.in` annotation restating what `field_behavior`
+already says. Keeping the two in step is a **lint's** job, the same one the
+`REQUIRED` case needs and for the same reason.
 
 ### Create IDs, per AIP-133
 
