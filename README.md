@@ -270,12 +270,14 @@ plugins:
       - proto_module=crate::buffa
 ```
 
-`strategy: all` is required, not cosmetic. The plugin emits one `mod.rs`
-mounting every package it generated for; under buf's default per-directory
-strategy each invocation would write a `mod.rs` covering only its own
-directory, and the last one would win. It also matters for
+`strategy: all` is required, not cosmetic. Output is one
+`<package>.aip.rs` per proto *package*, mirroring `protoc-gen-buffa` under
+`file_per_package=true`; under buf's default per-directory strategy a package
+spread over two directories would be generated twice, each invocation seeing
+half of it, and the second write would win. It also matters for
 `resource_reference`, which names its referent by *type string* and so can
-point at a resource in a file the referrer never imports.
+point at a resource in a file the referrer never imports — and for the single
+`mod.rs`, which has to mount every package at once.
 
 Mount the output with either `#[path]` or `include!` — the generated `mod.rs`
 carries no inner attributes, so both work:
@@ -285,6 +287,45 @@ pub mod aip {
     include!("aip/mod.rs");
 }
 ```
+
+### Or skip the packaging output: `packaging=false`
+
+The tree above is a parallel `example::v1` next to the buffa one. A consumer
+can instead put the resource names *beside* the resources, by writing the
+output into the same directory as the buffa codegen and including
+`<package>.aip.rs` into the module that already holds the message types:
+
+```yaml
+  - local: protoc-gen-rust-aip
+    out: src/buffa          # alongside protoc-gen-buffa's own output
+    strategy: all
+    opt:
+      - packaging=false
+```
+
+```rust
+pub mod v1 {
+    include!("example.v1.rs");        // protoc-gen-buffa
+    include!("example.v1.aip.rs");    // this plugin
+}
+```
+
+With `packaging=false` no `mod.rs` is emitted at all. That is not only
+tidiness: a `mod.rs` written into a directory that already has a hand-written
+one **replaces it**, and `buf generate` exits 0 without mentioning it.
+
+`proto_module` is then unread — it only ever appears in the module tree — so
+there is no second place for the consumer's layout to be described.
+
+Two constraints come with it:
+
+- **Single package.** A `<package>.aip.rs` names a same-package type by its
+  short name, but reaches another package with `super` hops counted from the
+  root of the tree that is no longer emitted. A multi-package schema has to
+  mount the tree.
+- **The file keeps its `use super::*`.** Harmless where the types are already
+  in scope; it is what makes the file work when the enclosing module brings
+  them in with a `use` instead.
 
 ## Development
 

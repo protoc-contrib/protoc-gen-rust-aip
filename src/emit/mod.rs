@@ -1,10 +1,11 @@
 //! Turns the scanned [`Registry`] into `CodeGeneratorResponse` files.
 //!
-//! One Rust file per source `.proto`, plus the module tree that mounts them.
-//! The layout matches `protoc-gen-buffa` and `protoc-gen-protovalidate-buffa`
-//! so all three plugins' output drops into a consumer the same way — and so a
-//! generated file can be `include!`d into the module that already holds the
-//! message types it extends.
+//! One Rust file per proto *package*, `<package>.aip.rs`, plus the module tree
+//! that mounts them. Per package rather than per source `.proto` to match
+//! `protoc-gen-buffa` under `file_per_package=true`, which is what a consumer
+//! of both ends up with: `example.v1.rs` and `example.v1.aip.rs`, side by side
+//! and includable into the same module. The `.aip` says which plugin wrote it,
+//! so several extending the same package can share a directory.
 
 pub mod behavior;
 pub mod query;
@@ -32,22 +33,49 @@ pub struct Options {
     /// The Rust module the buffa-generated message types live under.
     ///
     /// Each leaf of the emitted module tree does `use <proto_module>::<pkg>::*`
-    /// so the accessors emitted for a message can name it unqualified.
+    /// so the accessors emitted for a message can name it unqualified. Read
+    /// only when [`packaging`](Self::packaging) is on, since that tree is the
+    /// only thing it appears in.
     pub proto_module: String,
+
+    /// Whether to emit the module tree that mounts the per-file output:
+    /// `mod.rs` and one `<package>.mod.rs` per package.
+    ///
+    /// On by default, which is what a consumer mounting the whole tree with
+    /// `include!("aip/mod.rs")` needs.
+    ///
+    /// Off for a consumer that instead includes the per-file output into the
+    /// module already holding the message types, so the resource names sit
+    /// beside the resources rather than in a parallel tree. Then the packaging
+    /// files are not merely unused — a `mod.rs` written into the same directory
+    /// as a hand-written one silently replaces it, which `buf generate` reports
+    /// as success.
+    ///
+    /// Turning it off constrains the schema: the per-file output names a
+    /// same-package type by its short name but reaches another package with
+    /// `super` hops counted from the root of this tree, so a consumer that does
+    /// not mount the tree can only resolve those hops for a single-package
+    /// schema.
+    pub packaging: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             proto_module: "crate::proto".to_owned(),
+            packaging: true,
         }
     }
 }
 
 /// Renders the response files for everything in `request.file_to_generate`.
 ///
-/// A file that declares no resource and references none produces no output at
-/// all, rather than an empty file the consumer would still have to mount.
+/// One `<package>.aip.rs` per proto package, plus — unless
+/// [`Options::packaging`] is off — the `mod.rs` that mounts them.
+///
+/// A package whose files declare no resource and reference none produces no
+/// output at all, rather than an empty file the consumer would still have to
+/// mount.
 ///
 /// # Errors
 ///
@@ -70,10 +98,9 @@ pub fn render(
     let walks = behavior::plan(index, &generated);
     let lists = query::plan(index);
 
-    let mut files = Vec::new();
-    // Proto package to the files emitted for it, so the module tree can mount
-    // each one under the right nesting.
-    let mut by_package: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Proto package to what each of its files emitted, concatenated in
+    // `file_to_generate` order so the output is stable across runs.
+    let mut by_package: BTreeMap<String, Vec<TokenStream>> = BTreeMap::new();
 
     for name in &request.file_to_generate {
         let descriptor = by_name
@@ -87,39 +114,32 @@ pub fn render(
         if resources.is_empty() && behaviors.is_empty() && queries.is_empty() {
             continue;
         }
-        let body = quote! { #resources #behaviors #queries };
+        by_package
+            .entry(package)
+            .or_default()
+            .push(quote! { #resources #behaviors #queries });
+    }
 
-        let path = format!("{}.rs", name.trim_end_matches(".proto").replace('/', "."));
+    let mut files = Vec::new();
+    for (package, bodies) in &by_package {
+        let path = package_file(package);
         let content = format(
             &quote! {
-                // Brings the buffa message types the module tree mounted into
-                // scope. A file that declares only resource names references
-                // none of them, hence the allow.
+                // Brings the buffa message types into scope: mounted by the
+                // module tree, or already present in the module a consumer
+                // included this into. A package that declares only resource
+                // names references none of them, hence the allow.
                 #[allow(unused_imports, clippy::wildcard_imports)]
                 use super::*;
-                #body
+                #( #bodies )*
             },
             &path,
         )?;
-        by_package.entry(package).or_default().push(path.clone());
         files.push(file(path, content));
     }
 
-    if files.is_empty() {
+    if files.is_empty() || !options.packaging {
         return Ok(files);
-    }
-
-    for (package, names) in &by_package {
-        let includes: Vec<TokenStream> = names
-            .iter()
-            .map(|name| {
-                let name = Literal::string(name);
-                quote! { include!(#name); }
-            })
-            .collect();
-        let path = format!("{package}.mod.rs");
-        let content = format(&quote! { #( #includes )* }, &path)?;
-        files.push(file(path, content));
     }
 
     files.push(file(
@@ -127,6 +147,14 @@ pub fn render(
         module_tree(&by_package, options)?,
     ));
     Ok(files)
+}
+
+/// The file a package's output is written to.
+///
+/// One per package, so the module tree includes it directly and there is no
+/// intermediate `<package>.mod.rs` between the two.
+fn package_file(package: &str) -> String {
+    format!("{package}.aip.rs")
 }
 
 fn file(name: String, content: String) -> File {
@@ -173,15 +201,18 @@ fn doc(text: &str) -> TokenStream {
 #[derive(Default)]
 struct Node {
     children: BTreeMap<String, Self>,
-    /// Set when a package's own files are mounted at this node.
+    /// Set when a package's own file is mounted at this node.
     package: Option<String>,
 }
 
 /// The top-level `mod.rs`: nested `pub mod` blocks mirroring each proto
-/// package, each leaf pulling in that package's files and bringing the matching
+/// package, each leaf pulling in that package's file and bringing the matching
 /// buffa module into scope so the emitted `impl` blocks resolve their message
 /// types by short name.
-fn module_tree(by_package: &BTreeMap<String, Vec<String>>, options: &Options) -> Result<String> {
+fn module_tree(
+    by_package: &BTreeMap<String, Vec<TokenStream>>,
+    options: &Options,
+) -> Result<String> {
     let mut root = Node::default();
     for package in by_package.keys() {
         let mut node = &mut root;
@@ -207,7 +238,7 @@ fn node_tokens(node: &Node, path: &[&str], proto_module: &syn::Path) -> TokenStr
         .as_ref()
         .map_or_else(TokenStream::new, |package| {
             let segments: Vec<syn::Ident> = path.iter().map(|s| format_ident!("{}", s)).collect();
-            let include = Literal::string(&format!("{package}.mod.rs"));
+            let include = Literal::string(&package_file(package));
             // Terse `allow`s, without the `reason` this crate writes for itself:
             // this file is machine-generated and read at a glance, and a paragraph
             // above every `use` buries the three lines that carry information.

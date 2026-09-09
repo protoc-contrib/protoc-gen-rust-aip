@@ -75,6 +75,10 @@ fn main() -> Result<()> {
         &index,
         &emit::Options {
             proto_module: "crate::proto".to_owned(),
+            // The fixture mounts the whole tree at `aip_gen`, so it wants the
+            // packaging output. A consumer that splices the per-file output
+            // into its own module tree turns this off; see the README.
+            packaging: true,
         },
     )?;
 
