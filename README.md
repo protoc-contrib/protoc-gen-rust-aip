@@ -248,6 +248,16 @@ counterpart; a struct literal does the job here.
 
 ## Wiring it up
 
+Install it from crates.io, or take `packages.default` from this repository's
+flake:
+
+```sh
+cargo install protoc-gen-rust-aip
+```
+
+The build compiles the vendored `google/api` annotation protos, so it needs
+`protoc` — on `PATH`, or named by `PROTOC`.
+
 Run it as a **local** plugin. The Rust template already does this for
 `protoc-gen-protovalidate-buffa`, which likewise publishes no BSR entry:
 
