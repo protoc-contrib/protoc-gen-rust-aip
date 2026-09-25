@@ -10,24 +10,20 @@ generated code depends on
 
 ## Status
 
-All three passes are implemented.
+Every pass is implemented.
 
 | Pass | Covers |
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or a minted one |
-| Query helpers | `filter`, `order_by` and `page_token` per List request, plus the combined `parse_query` |
 | `MUTABLE_PATHS` | AIP-134: which fields an update may write, for expanding an empty mask |
 | `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
 
 `REQUIRED` is **not** generated, deliberately — see [Field
 behavior](#field-behavior-clearing-is-generated-validating-is-protovalidates).
 
-**One deviation from the Go implementation, forced by the ecosystem:**
-`cel-rust` has no type checker, so a `filter` is checked by *reference* — every
-name it uses must be a declared field — rather than type-checked the way
-`cel-go` does for `protoc-gen-go-aip`. `title == 5` compiles here and fails at
-the query layer. See [Query helpers](#query-helpers-per-list-request).
+List queries — `filter`, `order_by`, `page_token` — are **not** generated,
+unlike `protoc-gen-go-aip`: see [List queries](#list-queries-are-the-query-layers).
 
 `tests/fixture/` compiles the schema in `tests/proto` with **both** `buffa` and this
 plugin and exercises the result, so the generated code is type-checked against
@@ -40,92 +36,21 @@ Only what a schema actually uses:
 | Crate | Needed when |
 | --- | --- |
 | [`aip-rs`](https://github.com/protoc-contrib/aip-rs) (as `aip`) | always |
-| `buffa` | a List request has a `page_token` — the checksum marshals the request |
-| `cel` | a List request has a `filter` |
 | `uuid` | a resource ID is annotated `UUID4` |
 
 
 ## What it generates
 
-### Query helpers, per List request
+### List queries are the query layer's
 
-A request is a List request when a service method takes it and returns a
-message with a single repeated message field. **That field's type is the
-resource**, and its fields are what get exposed. Nothing needs annotating:
-
-```proto
-service Library {
-  rpc ListBooks(ListBooksRequest) returns (ListBooksResponse);
-}
-
-message ListBooksResponse {
-  repeated Book books = 1;   // <- Book is the resource
-  string next_page_token = 2;
-}
-```
-
-From that it emits, on the request:
-
-```rust
-impl ListBooksRequest {
-    pub const QUERY_FIELDS: &'static [&'static str];
-
-    pub fn parse_filter(&self) -> Result<Option<cel::Program>, aip::query::FilterError>;
-    pub fn parse_order_by(&self) -> Result<aip::OrderBy, aip::QueryError>;
-    pub fn parse_page_token(&self) -> Result<aip::PageToken, aip::pagination::ParseError>;
-    pub fn checksum(&self) -> u32;
-
-    pub fn parse_query(&self) -> Result<ListBooksQuery, aip::QueryError>;
-}
-```
-
-Only the dimensions the request actually declares get a parser, and
-`ListBooksQuery` has one field per dimension — a request with just `filter`
-gets just `filter`.
-
-`QUERY_FIELDS` is every field of `Book` with a CEL type. Fields with no total
-order — nested messages other than `Timestamp` and `Duration`, repeated
-fields, maps — are **skipped, not rejected**. A field that is not declared is
-simply undeclared.
-
-Proto enums declare as CEL **int**, which is how a database column stores
-them: `genre == 1`, not `genre == "GENRE_FICTION"`.
-
-There is no allow-list in the `.proto` marking which fields are queryable.
-That policy lives at the query layer, in the AIP-path to database-column map,
-which is fail-closed. A second copy in the schema was tried in the Go
-predecessor and removed — it could only drift out of agreement with the one
-that is actually enforced.
-
-#### Filters are reference-checked, not type-checked
-
-The Go implementation compiles a filter against a `cel.Env` declaring each
-field's type, so `cel-go`'s checker rejects `title == 5` at the boundary.
-**`cel-rust` has no checker** — `Program::compile` parses. So a filter is
-parsed, and then every name it references is checked against `QUERY_FIELDS`:
-
-```rust
-list.filter = r#"shoe_size == 9"#.into();   // FilterError::Undeclared
-list.filter = r#"title = "x" AND y"#.into(); // FilterError::Syntax — AIP-160, not CEL
-list.filter = r#"title == 5"#.into();        // parses; fails at the query layer
-```
-
-Undeclared names and the old AIP-160 grammar are caught. Type errors are not,
-and reach whatever builds the `WHERE` clause. Revisit if `cel-rust` grows a
-checker.
-
-#### The page-token checksum
-
-`checksum` clones the request, clears `page_token`, `page_size` and
-`skip`, and marshals it — the AIP-158 rule, which is why the generated code
-depends on `buffa`. A mismatch means the client changed `filter` or `order_by`
-mid-page.
-
-One caveat carried from the specification: marshalling must be
-**deterministic**. buffa encodes a map field in `HashMap` order, so a List
-request carrying a map produces an unstable checksum and rejects every token.
-The generated doc comment says so on any request where it applies; configure
-that field as a `BTreeMap` in the buffa codegen.
+Nothing is generated for a List request's `filter`, `order_by` or `page_token`.
+What they mean is decided where the query runs: which fields a client may name
+is the mapping from AIP paths to columns, a filter is only as good as the SQL it
+becomes, and a page token is whatever the pager can resume from — a keyset
+cursor, not an offset. A parser generated from the `.proto` knows none of that,
+so it could only disagree with the one that runs: accept a field the query
+refuses, or decode a token the server never issued. Parse them in the query
+layer — [sqlx-query](https://github.com/sqlx-contrib/sqlx-query) does, for SQL.
 
 ### `MUTABLE_PATHS`, and what is *not* generated for AIP-134
 
@@ -222,7 +147,7 @@ with `(buf.validate.field).required` — or a `min_len`, for a presence-less
 scalar — and a server running protovalidate already enforces that. A second
 check generated from the AIP annotation could only drift out of agreement with
 the one that actually runs, which is the same argument this plugin makes
-against [an allow-list in the `.proto`](#query-helpers-per-list-request).
+against [generating List query parsers](#list-queries-are-the-query-layers).
 
 What *is* worth having is a lint that the two annotations agree: a field marked
 REQUIRED with nothing in `buf.validate` enforcing it is a field the schema

@@ -1,6 +1,6 @@
 //! Generates Rust helpers for [Google AIP](https://google.aip.dev)-shaped APIs
-//! from a protobuf schema: typed resource names, `List` request query parsing,
-//! and the `OUTPUT_ONLY` clearing walk.
+//! from a protobuf schema: typed resource names, AIP-133 create IDs, AIP-134
+//! mutable paths, and the `OUTPUT_ONLY` clearing walk.
 //!
 //! The Rust counterpart of
 //! [protoc-gen-go-aip](https://github.com/protoc-contrib/protoc-gen-go-aip).
