@@ -35,7 +35,7 @@ Only what a schema actually uses:
 
 | Crate | Needed when |
 | --- | --- |
-| [`aip-rs`](https://github.com/protoc-contrib/aip-rs) (as `aip`) | always |
+| [`aip-rs`](https://crates.io/crates/aip-rs) (as `aip`) | always |
 | `uuid` | a resource ID is annotated `UUID4` |
 
 

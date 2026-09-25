@@ -72,11 +72,11 @@ pub struct Segment {
 
 /// A parsed resource name pattern, e.g. `publishers/{publisher}/books/{book}`.
 ///
-/// Parsed here rather than deferred to `aip::ResourcePattern` because the
-/// generator has to reason about the segments — to derive struct fields, to
-/// match a child against its parent — before any of it reaches the runtime.
-/// The runtime compiles the same string again at startup, from the literal this
-/// emits, so the two cannot disagree about a pattern that round-trips.
+/// Held here as well as in `aip::ResourcePattern` because the generator has to
+/// reason about the segments — to derive struct fields, to match a child
+/// against its parent — and the runtime keeps its segments private. Which
+/// patterns are valid is the runtime's alone to say: [`parse`](Self::parse)
+/// asks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
     /// The pattern as written in the annotation.
@@ -85,54 +85,28 @@ pub struct Pattern {
 }
 
 impl Pattern {
-    /// Parses a pattern string, rejecting what `aip::ResourcePattern::compile`
-    /// would also reject — an empty pattern, an empty or malformed segment, a
-    /// repeated variable name.
+    /// Parses a pattern string, rejecting exactly what
+    /// `aip::ResourcePattern::compile` rejects, by calling it.
     ///
-    /// Rejecting here rather than letting the runtime do it turns a schema
-    /// mistake into a `buf generate` failure naming the resource, instead of a
-    /// panic in the consumer's first request.
+    /// The generated code compiles the same string at startup and panics if
+    /// it fails, so asking the runtime here — rather than keeping a copy of its
+    /// rules that could fall behind — turns a schema mistake into a
+    /// `buf generate` failure naming the resource.
     fn parse(source: &str) -> Result<Self> {
-        if source.is_empty() {
-            bail!("empty pattern");
-        }
-        let mut segments = Vec::new();
-        for (index, part) in source.split('/').enumerate() {
-            let Some(name) = part.strip_prefix('{') else {
-                if part.is_empty() {
-                    bail!("pattern {source:?}: empty segment {index}");
-                }
-                if part.contains(['{', '}']) {
-                    bail!("pattern {source:?}: malformed segment {part:?}");
-                }
-                segments.push(Segment {
-                    name: part.to_owned(),
-                    variable: false,
+        aip::ResourcePattern::compile(source)?;
+        // Past the runtime's checks, a segment is either a literal or a whole
+        // `{name}`; nothing else is left to reject.
+        let segments = source
+            .split('/')
+            .map(|part| {
+                let variable = part.strip_prefix('{').and_then(|n| n.strip_suffix('}'));
+                Segment {
+                    name: variable.unwrap_or(part).to_owned(),
+                    variable: variable.is_some(),
                     format: Format::default(),
-                });
-                continue;
-            };
-            let Some(name) = name.strip_suffix('}') else {
-                bail!("pattern {source:?}: malformed segment {part:?}");
-            };
-            if name.is_empty() {
-                bail!("pattern {source:?}: empty variable name in segment {index}");
-            }
-            if name.contains(['{', '}']) {
-                bail!("pattern {source:?}: malformed segment {part:?}");
-            }
-            if segments
-                .iter()
-                .any(|s: &Segment| s.variable && s.name == name)
-            {
-                bail!("pattern {source:?}: duplicate variable {name:?}");
-            }
-            segments.push(Segment {
-                name: name.to_owned(),
-                variable: true,
-                format: Format::default(),
-            });
-        }
+                }
+            })
+            .collect();
         Ok(Self {
             source: source.to_owned(),
             segments,
@@ -707,6 +681,12 @@ mod tests {
             "publishers/publisher}",
             "publishers/{}",
             "books/{book}/editions/{book}",
+            // AIP-122 spelling, which the runtime enforces: a camelCase
+            // literal, a snake_case variable, no path-template syntax.
+            "book_shelves/{shelf}",
+            "Publishers/{publisher}",
+            "books/{bookId}",
+            "books/{book=**}",
         ] {
             assert!(
                 Pattern::parse(bad).is_err(),

@@ -36,6 +36,10 @@ quote = "1"
 syn = { version = "3", features = ["full"] }
 prettyplease = "0.3"
 anyhow = "1"
+# The runtime the generated code calls into, used here for one thing: compiling
+# each pattern the way the generated code will at startup, so a pattern the
+# runtime rejects fails `buf generate` instead of panicking in a consumer.
+aip = { package = "aip-rs", version = "0.1" }
 
 [build-dependencies]
 buffa-build = "0.9.2"
