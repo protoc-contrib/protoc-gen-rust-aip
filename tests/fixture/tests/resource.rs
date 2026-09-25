@@ -252,19 +252,17 @@ fn a_create_request_keeps_the_id_the_caller_proposed() {
         ..Default::default()
     };
     assert_eq!(
-        request.collection_id_or_new().unwrap(),
-        uuid::Uuid::parse_str(ID).unwrap()
+        request.parse_collection_id().unwrap(),
+        Some(uuid::Uuid::parse_str(ID).unwrap())
     );
 }
 
 #[test]
-fn an_empty_create_id_is_minted_by_the_server() {
-    // AIP-133: empty means the server assigns one, so two calls differ.
+fn an_empty_create_id_is_left_to_the_server() {
+    // AIP-133: empty means the server assigns one -- and which kind of UUID
+    // is the server's call, so the accessor mints nothing.
     let request = proto::example::v1::CreateCollectionRequest::default();
-    assert_ne!(
-        request.collection_id_or_new().unwrap(),
-        request.collection_id_or_new().unwrap()
-    );
+    assert_eq!(request.parse_collection_id().unwrap(), None);
 }
 
 #[test]
@@ -273,7 +271,7 @@ fn a_proposed_id_that_is_not_a_uuid_fails_as_that_segment() {
         collection_id: "not-a-uuid".to_owned(),
         ..Default::default()
     };
-    let error = request.collection_id_or_new().unwrap_err();
+    let error = request.parse_collection_id().unwrap_err();
     // The same error a whole name carrying that ID would produce, rather than
     // a second error type at the call site.
     assert!(matches!(
@@ -284,16 +282,16 @@ fn a_proposed_id_that_is_not_a_uuid_fails_as_that_segment() {
 
 #[test]
 fn a_child_gets_an_accessor_for_its_own_id_only() {
-    // Item's own {item} is UUID-typed, so CreateItemRequest mints it. Its
+    // Item's own {item} is UUID-typed, so CreateItemRequest parses it. Its
     // {organization} comes from the parent's create request, which is what
-    // types it -- there is no `organization_id_or_new` here.
+    // types it -- there is no `parse_organization_id` here.
     let request = proto::example::v1::CreateItemRequest {
         item_id: ID.to_owned(),
         ..Default::default()
     };
     assert_eq!(
-        request.item_id_or_new().unwrap(),
-        uuid::Uuid::parse_str(ID).unwrap()
+        request.parse_item_id().unwrap(),
+        Some(uuid::Uuid::parse_str(ID).unwrap())
     );
 }
 
@@ -321,7 +319,7 @@ fn the_accessors_are_emitted_for_views_too() {
     };
     let create = proto::example::v1::CreateCollectionRequestOwnedView::from_owned(&create).unwrap();
     assert_eq!(
-        create.view().collection_id_or_new().unwrap(),
-        uuid::Uuid::parse_str(ID).unwrap()
+        create.view().parse_collection_id().unwrap(),
+        Some(uuid::Uuid::parse_str(ID).unwrap())
     );
 }
