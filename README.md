@@ -95,7 +95,7 @@ already says. Keeping the two in step is a **lint's** job, the same one the
 
 ```rust
 impl CreateCollectionRequest {
-    pub fn parse_collection_id(&self) -> Result<Option<uuid::Uuid>, aip::resource::ScanError>;
+    pub fn parse_collection_id(&self) -> Result<Option<uuid::Uuid>, aip::resource::ParseError>;
 }
 
 // A server fills the empty case with the UUID it mints:
@@ -114,7 +114,7 @@ says which kind in one `unwrap_or_else`.
 Only for a single-pattern resource with a UUID-typed own ID. A `string` ID has
 no minting rule the schema states, and a multi-pattern resource's create request
 does not say which pattern it is creating under, so neither gets an accessor
-rather than getting a guess. A failure is reported as the same `ScanError` an
+rather than getting a guess. A failure is reported as the same `ParseError` an
 unparseable segment produces when reading a whole name, so a call site handles
 one error type either way.
 
@@ -239,7 +239,7 @@ disagree about a segment's type.
 
 A UUID segment can't hold the AIP-159 wildcard, since `-` is not a UUID;
 `contains_wildcard()` only ever consults the string segments. A conversion that
-fails is reported as `ScanError`, the same error as any other name that does not
+fails is reported as `ParseError`, the same error as any other name that does not
 match the pattern, rather than as a second error type at the call site.
 
 Unlike the Go predecessor, no `Format<T>Name` / `Parse<T>ID` free functions are

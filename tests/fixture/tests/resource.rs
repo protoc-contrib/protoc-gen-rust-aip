@@ -172,10 +172,10 @@ fn a_segment_that_is_not_a_uuid_fails_to_parse() {
     let error = ex::CollectionName::parse("collections/not-a-uuid").unwrap_err();
     assert!(matches!(
         error.kind(),
-        aip::resource::ScanErrorKind::InvalidValue { name, .. } if name == "collection"
+        aip::resource::ParseErrorKind::InvalidValue { name, .. } if name == "collection"
     ));
     // It is reported as the name not matching the pattern, not as a separate
-    // error type the caller has to handle alongside ScanError.
+    // error type the caller has to handle alongside ParseError.
     assert!(
         error
             .to_string()
@@ -276,7 +276,7 @@ fn a_proposed_id_that_is_not_a_uuid_fails_as_that_segment() {
     // a second error type at the call site.
     assert!(matches!(
         error.kind(),
-        aip::resource::ScanErrorKind::InvalidValue { name, .. } if name == "collection"
+        aip::resource::ParseErrorKind::InvalidValue { name, .. } if name == "collection"
     ));
 }
 

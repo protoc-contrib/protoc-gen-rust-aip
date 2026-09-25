@@ -60,7 +60,7 @@ fn emit_resource(
     let message = emit_message_accessors(
         resource,
         &name_type,
-        &quote! { ::aip::resource::ScanError },
+        &quote! { ::aip::resource::ParseError },
         views,
     );
     quote! {
@@ -510,7 +510,7 @@ fn emit_pattern_struct(
             #parse_doc
             pub fn parse(
                 name: &str,
-            ) -> ::core::result::Result<Self, ::aip::resource::ScanError> {
+            ) -> ::core::result::Result<Self, ::aip::resource::ParseError> {
                 #ids
                 Self::compiled().scan_into(name, #ids_ref)?;
                 ::core::result::Result::Ok(Self { #( #assignments, )* })
@@ -519,7 +519,7 @@ fn emit_pattern_struct(
             #parse_full_doc
             pub fn parse_full(
                 name: &str,
-            ) -> ::core::result::Result<Self, ::aip::resource::ScanError> {
+            ) -> ::core::result::Result<Self, ::aip::resource::ParseError> {
                 #ids
                 Self::compiled().scan_full_into(name, #domain, #ids_ref)?;
                 ::core::result::Result::Ok(Self { #( #assignments, )* })
@@ -531,7 +531,7 @@ fn emit_pattern_struct(
         #display
 
         impl ::core::str::FromStr for #name_type {
-            type Err = ::aip::resource::ScanError;
+            type Err = ::aip::resource::ParseError;
 
             fn from_str(name: &str) -> ::core::result::Result<Self, Self::Err> {
                 Self::parse(name)
@@ -771,7 +771,7 @@ fn emit_reference(
     let error = if resource.is_multi_pattern() {
         quote! { ::aip::resource::NoPatternError }
     } else {
-        quote! { ::aip::resource::ScanError }
+        quote! { ::aip::resource::ParseError }
     };
     let value = if reference.field_optional {
         quote! { self.#field.as_deref().unwrap_or_default() }
@@ -996,7 +996,7 @@ fn emit_create_id(
          one is, the schema does not state.\n\n\
          # Errors\n\n\
          If the caller proposed an ID that is not a UUID. Reported as the same \
-         [`ScanError`](::aip::resource::ScanError) an unparseable `{}` segment \
+         [`ParseError`](::aip::resource::ParseError) an unparseable `{}` segment \
          produces when reading a whole name, so a call site handles one error \
          type either way.",
         resource.resource_type,
@@ -1016,7 +1016,7 @@ fn emit_create_id(
                 &self,
             ) -> ::core::result::Result<
                 ::core::option::Option<::uuid::Uuid>,
-                ::aip::resource::ScanError,
+                ::aip::resource::ParseError,
             > {
                 if self.#ident.is_empty() {
                     return ::core::result::Result::Ok(::core::option::Option::None);
