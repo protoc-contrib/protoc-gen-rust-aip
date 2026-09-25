@@ -1,9 +1,9 @@
-//! An index of every message and method in the request, in the shape the
-//! field-behavior and query passes need.
+//! An index of every message in the request, in the shape the passes that read
+//! message structure need.
 //!
 //! [`scan`](crate::scan) answers questions about resource *names*, which are
-//! declared by annotations. These two passes ask about message *structure* —
-//! what a field holds, which message a method returns — so they share an index
+//! declared by annotations. The field-behavior, field-mask and create-ID passes
+//! ask about message *structure* — what a field holds — so they share an index
 //! of that instead.
 
 use std::collections::BTreeMap;
@@ -106,21 +106,10 @@ pub struct Message {
     pub fields: Vec<Field>,
 }
 
-/// One RPC, reduced to the two messages that say whether it is a List.
-#[derive(Debug, Clone)]
-pub struct Method {
-    /// The fully-qualified request message name.
-    pub input: String,
-    /// The fully-qualified response message name.
-    pub output: String,
-}
-
 /// Every message and method in the request.
 #[derive(Debug, Default)]
 pub struct Index {
     messages: BTreeMap<String, Message>,
-    /// In declaration order, so generation does not depend on map order.
-    pub methods: Vec<Method>,
 }
 
 impl Index {
@@ -158,16 +147,6 @@ fn walk_file(file: &FileDescriptorProto, index: &mut Index) {
     let source_file = file.name.clone().unwrap_or_default();
     for message in &file.message_type {
         walk_message(message, &[], &package, &source_file, index);
-    }
-    for service in &file.service {
-        for method in &service.method {
-            let (Some(input), Some(output)) =
-                (method.input_type.clone(), method.output_type.clone())
-            else {
-                continue;
-            };
-            index.methods.push(Method { input, output });
-        }
     }
 }
 
