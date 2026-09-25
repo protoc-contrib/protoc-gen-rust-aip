@@ -6,11 +6,15 @@ name = "protoc-gen-rust-aip"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "protoc plugin that emits Rust helpers for Google AIP-shaped APIs: resource names, List query parsing and the OUTPUT_ONLY clearing walk."
+description = "protoc plugin that emits Rust helpers for Google AIP-shaped APIs: typed resource names, create IDs, update-mask paths and the OUTPUT_ONLY clearing walk."
 repository = "https://github.com/protoc-contrib/protoc-gen-rust-aip"
 homepage = "https://github.com/protoc-contrib/protoc-gen-rust-aip"
 keywords = ["aip", "protobuf", "buffa", "grpc", "codegen"]
 categories = ["development-tools"]
+# What `cargo install` builds from: the plugin, its build script and the
+# annotation protos that script compiles. The fixture, its test schema, CI and
+# Nix are this repository's, not the crate's.
+include = ["src/**", "build.rs", "proto/**", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [[bin]]
 name = "protoc-gen-rust-aip"

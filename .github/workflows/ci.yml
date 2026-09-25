@@ -40,6 +40,11 @@ jobs:
       - name: Run Tests
         run: nix develop --command cargo test --workspace
 
+      # Builds the plugin from what `include` ships, so a packaging break shows
+      # up on the pull request rather than in the publish job.
+      - name: Check Package
+        run: nix develop --command cargo package --package protoc-gen-rust-aip
+
   release:
     needs: test
     if: github.event_name == 'push'
