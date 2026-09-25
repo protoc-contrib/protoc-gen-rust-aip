@@ -1,5 +1,13 @@
 # protoc-gen-rust-aip
 
+[![CI](https://github.com/protoc-contrib/protoc-gen-rust-aip/actions/workflows/ci.yml/badge.svg)](https://github.com/protoc-contrib/protoc-gen-rust-aip/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/protoc-contrib/protoc-gen-rust-aip?include_prereleases)](https://github.com/protoc-contrib/protoc-gen-rust-aip/releases)
+[![crates.io](https://img.shields.io/crates/v/protoc-gen-rust-aip?logo=rust)](https://crates.io/crates/protoc-gen-rust-aip)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust (edition 2024)](https://img.shields.io/badge/Rust-2024-black?logo=rust)](https://www.rust-lang.org/)
+[![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3?logo=nixos&logoColor=white)](https://nixos.wiki/wiki/Flakes)
+[![protoc](https://img.shields.io/badge/protoc-compatible-blue)](https://protobuf.dev)
+
 A protoc plugin that generates Rust helpers for
 [Google AIP](https://google.aip.dev)-shaped APIs.
 
