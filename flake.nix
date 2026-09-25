@@ -34,17 +34,7 @@
           src = pkgs.lib.cleanSource ./.;
           doCheck = false;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            # aip-rs is unreleased and comes from git, which Cargo.lock records
-            # without a hash; Nix needs one to fetch it in the sandbox. Only the
-            # fixture depends on it, but the lock is the whole workspace's. It
-            # changes whenever the pinned aip-rs commit does, and `nix build`
-            # prints the replacement when it stops matching.
-            outputHashes = {
-              "aip-rs-0.0.0" = "sha256-7c5JKjjBf8AbQY26qkkQgMdKMrL2G/uSkPuthwnHOF4=";
-            };
-          };
+          cargoLock.lockFile = ./Cargo.lock;
 
           # `build.rs` compiles the vendored google/api annotations, so protoc
           # is needed to build and not only to develop. Named outright rather
