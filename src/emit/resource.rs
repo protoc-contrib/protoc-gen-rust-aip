@@ -977,19 +977,23 @@ fn emit_create_id(
         .parse()
         .expect("a message path built from proto identifiers is a valid Rust path");
     let ident = buffa_codegen::idents::make_field_ident(&field.name);
-    let method = format_ident!("{}_or_new", field.name);
+    let method = format_ident!("parse_{}", field.name);
     let name_type = format_ident!("{}", resource.name_type());
     let variable = Literal::string(&segment.name);
 
     let method_doc = doc(&format!(
-        "The ID for the `{}` being created: the one the caller proposed, or a \
-         fresh v4 UUID when they left `{}` empty.\n\n\
-         AIP-133: an empty `{}` means the server assigns one. The field holds a \
-         bare ID rather than a resource name, so there is no pattern to scan — \
-         build the name from the result with `{} {{ {} }}`.\n\n\
+        "The ID the caller proposed for the `{}` being created, or `None` when \
+         they left `{}` empty.\n\n\
+         AIP-133: an empty `{}` means the server assigns one, and how is the \
+         server's to decide -- a version 7 UUID for an index that stays in \
+         insertion order, a version 4 for one that reveals nothing -- so it is \
+         handed back as \
+         `None` for the call site to fill: `.unwrap_or_else(Uuid::now_v7)`. \
+         The field holds a bare ID rather than a resource name, so there is no \
+         pattern to scan -- build the name from the result with `{} {{ {} }}`.\n\n\
          Emitted because the schema types this ID as a UUID, through \
-         `google.api.field_info`. A `string` ID gets no accessor: what a server \
-         generates for one is not something the schema states.\n\n\
+         `google.api.field_info`. A `string` ID gets no accessor: what a valid \
+         one is, the schema does not state.\n\n\
          # Errors\n\n\
          If the caller proposed an ID that is not a UUID. Reported as the same \
          [`ScanError`](::aip::resource::ScanError) an unparseable `{}` segment \
@@ -1010,12 +1014,17 @@ fn emit_create_id(
             #method_doc
             pub fn #method(
                 &self,
-            ) -> ::core::result::Result<::uuid::Uuid, ::aip::resource::ScanError> {
+            ) -> ::core::result::Result<
+                ::core::option::Option<::uuid::Uuid>,
+                ::aip::resource::ScanError,
+            > {
                 if self.#ident.is_empty() {
-                    return ::core::result::Result::Ok(::uuid::Uuid::new_v4());
+                    return ::core::result::Result::Ok(::core::option::Option::None);
                 }
                 match <::uuid::Uuid as ::core::str::FromStr>::from_str(&self.#ident) {
-                    ::core::result::Result::Ok(value) => ::core::result::Result::Ok(value),
+                    ::core::result::Result::Ok(value) => {
+                        ::core::result::Result::Ok(::core::option::Option::Some(value))
+                    }
                     ::core::result::Result::Err(error) => ::core::result::Result::Err(
                         #name_type::compiled().invalid_value(&self.#ident, #variable, error),
                     ),

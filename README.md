@@ -95,14 +95,21 @@ already says. Keeping the two in step is a **lint's** job, the same one the
 
 ```rust
 impl CreateCollectionRequest {
-    pub fn collection_id_or_new(&self) -> Result<uuid::Uuid, aip::resource::ScanError>;
+    pub fn parse_collection_id(&self) -> Result<Option<uuid::Uuid>, aip::resource::ScanError>;
 }
+
+// A server fills the empty case with the UUID it mints:
+let collection_id = request.parse_collection_id()?.unwrap_or_else(Uuid::now_v7);
 ```
 
-An empty `{resource}_id` means the server assigns one. That the ID is a UUID is
-a schema fact — the same `google.api.field_info` annotation that types the
-segment on `CollectionName`; that an empty one means "mint one" is an AIP fact,
-identical on every such request, and every consumer was writing it out by hand.
+The ID the caller proposed, or `None` for an empty `{resource}_id`, which
+AIP-133 reads as "the server assigns one". That the ID is a UUID is a schema
+fact — the same `google.api.field_info` annotation that types the segment on
+`CollectionName` — so parsing it is generated. What the server assigns is not:
+a UUIDv7 keeps a primary-key index in insertion order, a v4 reveals nothing
+about when a row was made, and that choice belongs to the server, not to the
+SDK every client compiles. So the accessor mints nothing, and the call site
+says which kind in one `unwrap_or_else`.
 
 Only for a single-pattern resource with a UUID-typed own ID. A `string` ID has
 no minting rule the schema states, and a multi-pattern resource's create request
@@ -111,8 +118,8 @@ rather than getting a guess. A failure is reported as the same `ScanError` an
 unparseable segment produces when reading a whole name, so a call site handles
 one error type either way.
 
-Needs the `uuid` crate's `v4` feature, which is the only feature this plugin's
-output requires beyond a crate's defaults.
+Needs no `uuid` feature beyond its defaults: the generated code only parses.
+A server needs whichever minting feature it calls — `v7` for `now_v7`.
 
 ### Field behavior: clearing is generated, validating is protovalidate's
 
@@ -288,7 +295,7 @@ async fn update_shipment(&self, ctx: RequestContext, request: ServiceRequest<'_,
 ```
 
 With `views=true` every read-only accessor — `parse_name`, `parse_full_name`,
-`parse_<reference>`, `<resource>_id_or_new`, `validate_update_mask` — is emitted
+`parse_<reference>`, `parse_<resource>_id`, `validate_update_mask` — is emitted
 for `FooView<'_>` as well. The bodies are token-identical: a view's field holds
 `&str` where the owned message holds `String`, and every operation these
 accessors perform is spelled the same for both.
