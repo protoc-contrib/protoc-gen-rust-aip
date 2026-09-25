@@ -19,7 +19,7 @@ dependencies = [
 [[package]]
 name = "aip-rs"
 version = "0.0.0"
-source = "git+https://github.com/protoc-contrib/aip-rs#935c2cbbd5a2379df7ef318e975a448e49486c13"
+source = "git+https://github.com/protoc-contrib/aip-rs#a2c2dc99d2ee3379ef2e86cb13da9cce447283fe"
 
 [[package]]
 name = "anyhow"
