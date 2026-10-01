@@ -23,11 +23,6 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v23
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v15
-        with:
-          use-flakehub: disabled
-          use-gha-cache: enabled
 
       - name: Check Formatting
         run: nix develop --command cargo fmt --all --check
@@ -128,11 +123,6 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v23
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v15
-        with:
-          use-flakehub: disabled
-          use-gha-cache: enabled
 
       - name: Authenticate with Crates.io
         uses: rust-lang/crates-io-auth-action@v1
