@@ -251,11 +251,14 @@ fn impl_for(path: &TokenStream, view: bool, body: &TokenStream) -> TokenStream {
         #owned
         // On the view copy only, so the owned impl keeps full coverage. A view
         // holds `&str` where the owned message holds `String`, so `&self.field`
-        // is the borrow the owned form needs and one deref too many here --
-        // which is the price of the two impls sharing one body.
+        // is the borrow the owned form needs and one deref too many here; and
+        // `Option<&str>` where it holds `Option<String>`, so `.as_deref()` is
+        // the conversion the owned form needs and a no-op here -- which is the
+        // price of the two impls sharing one body.
         #[allow(
             clippy::needless_borrow,
-            reason = "the borrow is required by the owned impl these tokens are shared with"
+            clippy::needless_option_as_deref,
+            reason = "the borrow and the deref are required by the owned impl these tokens are shared with"
         )]
         impl #view <'_> { #body }
     }

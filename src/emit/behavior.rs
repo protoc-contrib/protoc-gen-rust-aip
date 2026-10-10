@@ -214,7 +214,7 @@ fn descend(field: &Field) -> TokenStream {
                 item.clear_output_only();
             }
         }
-    } else if field.proto3_optional {
+    } else if field.optional {
         quote! {
             if let ::core::option::Option::Some(value) = self.#ident.as_mut() {
                 value.clear_output_only();
