@@ -46,7 +46,7 @@ fn main() -> Result<()> {
 
 fn run(request: &CodeGeneratorRequest) -> Result<Vec<File>> {
     let options = parse_options(request.parameter.as_deref().unwrap_or_default());
-    let registry = scan::gather(request)?;
+    let registry = scan::gather(request, options.allow_unresolved_refs)?;
     let index = messages::gather(request);
     emit::render(request, &registry, &index, &options)
 }
@@ -74,6 +74,11 @@ fn parse_options(parameter: &str) -> emit::Options {
             "views" => {
                 if let Ok(value) = value.trim().parse() {
                     options.views = value;
+                }
+            }
+            "allow_unresolved_refs" => {
+                if let Ok(value) = value.trim().parse() {
+                    options.allow_unresolved_refs = value;
                 }
             }
             _ => {}
@@ -111,6 +116,13 @@ mod tests {
         assert!(!parse_options("").views);
         assert!(parse_options("views=true").views);
         assert!(!parse_options("views=false").views);
+    }
+
+    #[test]
+    fn unresolved_references_fail_unless_allowed() {
+        assert!(!parse_options("").allow_unresolved_refs);
+        assert!(parse_options("allow_unresolved_refs=true").allow_unresolved_refs);
+        assert!(!parse_options("allow_unresolved_refs=false").allow_unresolved_refs);
     }
 
     #[test]

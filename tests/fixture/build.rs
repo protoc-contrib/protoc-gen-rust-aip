@@ -69,7 +69,7 @@ fn main() -> Result<()> {
         .map_err(|error| anyhow::anyhow!("buffa codegen: {error}"))?;
 
     let request = request(&schema_root, &includes, &out)?;
-    let registry = scan::gather(&request)?;
+    let registry = scan::gather(&request, false)?;
     let index = messages::gather(&request);
     let generated = emit::render(
         &request,
@@ -84,6 +84,7 @@ fn main() -> Result<()> {
             // buffa generated views above, so the accessors are emitted for
             // them too -- which is what a connectrpc handler holds.
             views: true,
+            allow_unresolved_refs: false,
         },
     )?;
 

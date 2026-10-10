@@ -296,9 +296,9 @@ A UUID segment can't hold the AIP-159 wildcard, since `-` is not a UUID;
 fails is reported as `ParseError`, the same error as any other name that does not
 match the pattern, rather than as a second error type at the call site.
 
-Unlike the Go predecessor, no `Format<T>Name` / `Parse<T>ID` free functions are
-emitted. Those existed for goverter's `extend` directive, which has no Rust
-counterpart; a struct literal does the job here.
+No `Format<T>Name` / `Parse<T>ID` free functions are emitted. They were Go's,
+for goverter's `extend` directive, which has no Rust counterpart; a struct
+literal does the job here.
 
 ## Wiring it up
 
@@ -353,13 +353,13 @@ the owned message. So an accessor emitted only on `Foo` is one a handler cannot
 reach:
 
 ```rust
-async fn update_shipment(&self, ctx: RequestContext, request: ServiceRequest<'_, UpdateShipmentRequest>) {
-    request.validate_update_mask()?;   // needs views=true
+async fn create_item(&self, ctx: RequestContext, request: ServiceRequest<'_, CreateItemRequest>) {
+    let parent = request.parse_parent()?;   // needs views=true
 }
 ```
 
 With `views=true` every read-only accessor — `parse_name`, `parse_full_name`,
-`parse_<reference>`, `parse_<resource>_id`, `validate_update_mask` — is emitted
+`parse_<reference>`, `parse_<resource>_id`, `parse_filter` — is emitted
 for `FooView<'_>` as well. The bodies are token-identical: a view's field holds
 `&str` where the owned message holds `String`, and every operation these
 accessors perform is spelled the same for both.
@@ -371,9 +371,8 @@ Off by default, and it has to be: nothing in a `CodeGeneratorRequest` says
 whether buffa generated views, and emitting `impl FooView<'_>` when it did not
 is a compile error in the consumer rather than a missing method.
 
-`MUTABLE_PATHS` and `is_mutable_path` are unaffected — they are associated items
-on the resource, and `is_mutable_path` takes a `&str`, so there is nothing for a
-view to borrow.
+`MUTABLE_PATHS` is unaffected — it is an associated constant on the resource, so
+there is nothing for a view to borrow.
 
 ### Or skip the packaging output: `packaging=false`
 
@@ -413,6 +412,30 @@ Two constraints come with it:
 - **The file keeps its `use super::*`.** Harmless where the types are already
   in scope; it is what makes the file work when the enclosing module brings
   them in with a `use` instead.
+
+### Unresolved references: `allow_unresolved_refs=true`
+
+A `google.api.resource_reference` names its referent by type string. If the
+request declares no resource of that type, generation fails, naming the field:
+
+```text
+example.v1.Shelf.owner: reference to unknown type "people.example.com/Person" (set allow_unresolved_refs=true to skip)
+```
+
+The schema says the field holds that resource's name, so skipping it would drop
+the field's `parse_<field>` with nothing to say so. When the referent belongs to
+another API whose `.proto` is deliberately not compiled, skip it:
+
+```yaml
+    opt:
+      - allow_unresolved_refs=true
+```
+
+The same option, and the same default, as `protoc-gen-go-aip`. Only files being
+generated are held to it: an imported file may name a resource type it never
+imports, and nothing is emitted for it either way. References this plugin has
+nothing to emit for are skipped regardless — `child_type`, `type: "*"`, and a
+field that is not a singular `string`.
 
 ## Development
 
