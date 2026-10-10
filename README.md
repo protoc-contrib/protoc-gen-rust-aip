@@ -23,8 +23,8 @@ Every pass is implemented.
 | Pass | Covers |
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
-| Create IDs | AIP-133 `{resource}_id`: the proposed ID, or a minted one |
-| `MUTABLE_PATHS`, `implied_update_mask` | AIP-134: which fields an update may write, and the mask a client implies by omitting one |
+| Create IDs | AIP-133 `{resource}_id`: the proposed ID, or `None` for the server to mint one |
+| `MUTABLE_PATHS`, `implied_update_mask`, `immutable_changes` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, and the `IMMUTABLE` fields an update tries to change |
 | `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 
@@ -53,10 +53,13 @@ Only what a schema actually uses:
 
 ### List queries: `filter` gets an environment, ordering and paging are the query layer's
 
-A request is a List request when a service method takes it and returns a
-message with a single repeated message field; that field's type is the
-resource. Nothing is annotated — the same rule `protoc-gen-go-aip` uses. For
-each one with a `string filter` field, the counterpart of Go's `FilterEnv`:
+A request is a List request when a **unary** method of a service declared in
+the request's **own file** takes it and returns a message with a single
+repeated message field; that field's type is the resource. The request is a
+**top-level** message, and a resource with no field that has a CEL type gets
+nothing. Nothing is annotated — this is `protoc-gen-go-aip`'s rule, condition
+for condition. For each one with a `string filter` field, the counterpart of
+Go's `FilterEnv`:
 
 ```rust
 /// The CEL environment `filter` expressions on `ListVolumesRequest` compile in.
@@ -80,8 +83,8 @@ The expression is plain CEL, not AIP-160's CEL-*like* grammar, so
 `title = "x" AND published` is a syntax error rather than something misread.
 
 **It checks syntax, and nothing else.** cel-rust has no type checker and no
-variable declarations, so the registered fields constrain a `Volume{...}`
-literal, not the names a filter may use: `title > 3` and `shoe_size == 9` both
+variable declarations, so the registered fields constrain an
+`example.v1.Volume{...}` literal, not the names a filter may use: `title > 3` and `shoe_size == 9` both
 compile, where cel-go's checker rejects them. Names, types, and which fields a
 client may *actually* filter by are the query layer's — the last through its
 fail-closed column map.
@@ -116,8 +119,20 @@ or it was settable once, on create.
 impl Shipment {
     pub const MUTABLE_PATHS: &'static [&'static str];
     pub fn implied_update_mask(&self) -> Vec<&'static str>;
+    pub fn immutable_changes(&self, existing: &Self) -> Vec<&'static str>;
 }
 ```
+
+`immutable_changes` is AIP-203's half: the `IMMUTABLE` fields an update sets to
+something other than the stored value. Neither expansion ever writes one, so
+without it a changed value would be dropped silently rather than refused; an
+echoed-back value, or an unset one, is not reported. aip-go's
+`ImmutableChanges` answers the same.
+
+**Stricter than AIP-161, on purpose.** AIP-161 has a mask naming an
+`OUTPUT_ONLY` field ignored; here `field_mask.in` rejects it, which is the
+clearer error, and protoc-gen-aip-lint's `update-mask-writable-fields` rule
+keeps that list equal to the writable fields.
 
 **Validating a mask is not generated, and should not be.** That is
 `(buf.validate.field).field_mask.in`, which protovalidate-buffa implements as a
@@ -204,6 +219,11 @@ Needs no `uuid` feature beyond its defaults: the generated code only parses.
 A server needs whichever minting feature it calls — `v7` for `now_v7`.
 
 ### Field behavior: clearing is generated, validating is protovalidate's
+
+The walk reaches only messages this run generates. A generated message holding
+one from a file that is *not* generated, with `OUTPUT_ONLY` fields beneath it,
+fails generation, naming both — those fields could not be cleared, and an
+implied mask naming the holding field would store them. Generate that file too.
 
 The OUTPUT_ONLY walk is generated, not reflective — and not as an
 optimisation. buffa 0.9 has **no reflective path to mutation in any mode**:
@@ -465,6 +485,13 @@ generated are held to it: an imported file may name a resource type it never
 imports, and nothing is emitted for it either way. References this plugin has
 nothing to emit for are skipped regardless — `child_type`, `type: "*"`, and a
 field that is not a singular `string`.
+
+**Versions of one API.** `v1` and `v2` may each declare `example.com/Book`. A
+reference, a parent and a create request's ID format all bind to the
+declaration in the referring package; from another package, to the only
+declaration there is. A reference from a package that declares none, to a type
+several others do, fails as ambiguous (or is skipped, with
+`allow_unresolved_refs`). Two declarations of one type in one package fail.
 
 ## Development
 

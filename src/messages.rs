@@ -67,6 +67,9 @@ pub struct Field {
     /// proto2 `optional`, or editions explicit presence. See
     /// [`presence`](crate::presence).
     pub optional: bool,
+    /// Whether the field is proto2 `required` or editions `LEGACY_REQUIRED`:
+    /// a bare value that is always set on a message that parsed.
+    pub required: bool,
     /// The name of the real `oneof` this field belongs to, if any. A proto3
     /// `optional` field sits in a synthetic oneof, which is not one of these.
     pub oneof: Option<String>,
@@ -116,6 +119,10 @@ pub struct Method {
     pub input: String,
     /// The fully-qualified response message name.
     pub output: String,
+    /// The file the service declaring the method is in.
+    pub file: String,
+    /// Whether either side streams.
+    pub streaming: bool,
 }
 
 /// Every message and method in the request.
@@ -131,6 +138,13 @@ impl Index {
     #[must_use]
     pub fn get(&self, fqn: &str) -> Option<&Message> {
         self.messages.get(fqn)
+    }
+
+    /// Every message in the request, map entries aside.
+    pub fn all(&self) -> impl Iterator<Item = &Message> {
+        self.messages
+            .values()
+            .filter(|message| !message.is_map_entry)
     }
 
     /// Every message declared in `file`, in declaration order.
@@ -170,7 +184,13 @@ fn walk_file(file: &FileDescriptorProto, index: &mut Index) {
             else {
                 continue;
             };
-            index.methods.push(Method { input, output });
+            index.methods.push(Method {
+                input,
+                output,
+                file: source_file.clone(),
+                streaming: method.client_streaming.unwrap_or(false)
+                    || method.server_streaming.unwrap_or(false),
+            });
         }
     }
 }
@@ -269,6 +289,7 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str], scope: Scope) -> F
         type_name: field.type_name.clone().unwrap_or_default(),
         repeated: field.label == Some(Label::LABEL_REPEATED),
         optional: scope.is_option(field),
+        required: scope.is_required(field),
         oneof,
         output_only: has_behavior(field, FieldBehavior::OUTPUT_ONLY),
         identifier: has_behavior(field, FieldBehavior::IDENTIFIER),

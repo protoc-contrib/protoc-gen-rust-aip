@@ -24,7 +24,9 @@ const SCHEMA: &[&str] = &[
     "example/v1/behavior.proto",
     "example/v1/filter.proto",
     "example/v1/editions.proto",
+    "example/v1/legacy.proto",
     "other/v1/catalog.proto",
+    "example/v2/versioned.proto",
 ];
 
 fn main() -> Result<()> {

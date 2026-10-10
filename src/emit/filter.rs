@@ -1,11 +1,13 @@
 //! Emits the AIP-160 `filter` environment for a `List` request, and a
 //! `parse_filter` that compiles in it.
 //!
-//! Nothing is annotated. A request is a `List` request when a service method
-//! takes it and returns a message with a single repeated message field; that
-//! field's type is the resource, and its fields are what get declared — the
-//! same rule, and the same field-to-type mapping, as protoc-gen-go-aip's
-//! `FilterEnv`.
+//! Nothing is annotated. A request is a `List` request when a unary method of
+//! a service declared in the request's own file takes it and returns a message
+//! with a single repeated message field; that field's type is the resource,
+//! and its fields are what get declared. The request is a top-level message,
+//! and a resource with no field that has a CEL type gets nothing. That is
+//! protoc-gen-go-aip's rule, condition for condition, and its field-to-type
+//! mapping.
 //!
 //! `order_by` and `page_token` get nothing: how a request sorts and where a
 //! page resumes are decided where the query runs.
@@ -36,6 +38,9 @@ pub struct ListRequest {
 pub fn plan(index: &Index) -> BTreeMap<String, ListRequest> {
     let mut found = BTreeMap::new();
     for method in &index.methods {
+        if method.streaming {
+            continue;
+        }
         let Some(response) = index.get(&method.output) else {
             continue;
         };
@@ -45,7 +50,21 @@ pub fn plan(index: &Index) -> BTreeMap<String, ListRequest> {
         let Some(request) = index.get(&method.input) else {
             continue;
         };
+        // Declared beside the service, and at the top level: a nested message's
+        // path holds a `::`.
+        if request.source_file != method.file || request.rust_path.contains("::") {
+            continue;
+        }
         if !has_filter(request) {
+            continue;
+        }
+        let declares_any = index.get(&resource).is_some_and(|resource| {
+            resource
+                .fields
+                .iter()
+                .any(|field| cel_type(field).is_some())
+        });
+        if !declares_any {
             continue;
         }
         found.insert(
@@ -257,6 +276,148 @@ mod tests {
         assert_eq!(
             env_name(".example.v1.Outer.ListThingsRequest", "example.v1"),
             "OUTER_LIST_THINGS_FILTER_ENV"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use buffa_codegen::generated::{
+        compiler::CodeGeneratorRequest,
+        descriptor::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, MethodDescriptorProto,
+            ServiceDescriptorProto,
+            field_descriptor_proto::{Label, Type},
+        },
+    };
+
+    use super::*;
+
+    fn field(name: &str, ty: Type, label: Label, type_name: Option<&str>) -> FieldDescriptorProto {
+        FieldDescriptorProto {
+            name: Some(name.to_owned()),
+            number: Some(1),
+            r#type: Some(ty),
+            label: Some(label),
+            type_name: type_name.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    fn message(name: &str, fields: Vec<FieldDescriptorProto>) -> DescriptorProto {
+        DescriptorProto {
+            name: Some(name.to_owned()),
+            field: fields,
+            ..Default::default()
+        }
+    }
+
+    fn method(input: &str, streaming: bool) -> MethodDescriptorProto {
+        MethodDescriptorProto {
+            name: Some("List".to_owned()),
+            input_type: Some(input.to_owned()),
+            output_type: Some(".api.ListThingsResponse".to_owned()),
+            server_streaming: Some(streaming),
+            ..Default::default()
+        }
+    }
+
+    /// `api.proto`: `Thing` (with `title`, or only `blob` if `typeless`),
+    /// `ListThingsRequest` with `filter`, its response, and `Outer.NestedRequest`.
+    fn api(services: Vec<ServiceDescriptorProto>, typeless: bool) -> FileDescriptorProto {
+        let thing_field = if typeless {
+            field("blob", Type::TYPE_BYTES, Label::LABEL_OPTIONAL, None)
+        } else {
+            field("title", Type::TYPE_STRING, Label::LABEL_OPTIONAL, None)
+        };
+        let filter = || field("filter", Type::TYPE_STRING, Label::LABEL_OPTIONAL, None);
+        let mut outer = message("Outer", vec![]);
+        outer
+            .nested_type
+            .push(message("NestedRequest", vec![filter()]));
+        FileDescriptorProto {
+            name: Some("api.proto".to_owned()),
+            package: Some("api".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![
+                message("Thing", vec![thing_field]),
+                message("ListThingsRequest", vec![filter()]),
+                message(
+                    "ListThingsResponse",
+                    vec![field(
+                        "things",
+                        Type::TYPE_MESSAGE,
+                        Label::LABEL_REPEATED,
+                        Some(".api.Thing"),
+                    )],
+                ),
+                outer,
+            ],
+            service: services,
+            ..Default::default()
+        }
+    }
+
+    fn service(methods: Vec<MethodDescriptorProto>) -> ServiceDescriptorProto {
+        ServiceDescriptorProto {
+            name: Some("Things".to_owned()),
+            method: methods,
+            ..Default::default()
+        }
+    }
+
+    fn planned(files: Vec<FileDescriptorProto>) -> Vec<String> {
+        let request = CodeGeneratorRequest {
+            proto_file: files,
+            ..Default::default()
+        };
+        plan(&crate::messages::gather(&request))
+            .into_keys()
+            .collect()
+    }
+
+    #[test]
+    fn a_unary_method_beside_the_request_is_a_list() {
+        let found = planned(vec![api(
+            vec![service(vec![method(".api.ListThingsRequest", false)])],
+            false,
+        )]);
+        assert_eq!(found, [".api.ListThingsRequest"]);
+    }
+
+    #[test]
+    fn go_aip_s_conditions_each_rule_one_out() {
+        // A streaming method.
+        assert!(
+            planned(vec![api(
+                vec![service(vec![method(".api.ListThingsRequest", true)])],
+                false
+            )])
+            .is_empty()
+        );
+        // A service in another file.
+        let elsewhere = FileDescriptorProto {
+            name: Some("service.proto".to_owned()),
+            package: Some("api".to_owned()),
+            service: vec![service(vec![method(".api.ListThingsRequest", false)])],
+            ..Default::default()
+        };
+        assert!(planned(vec![api(vec![], false), elsewhere]).is_empty());
+        // A nested request.
+        assert!(
+            planned(vec![api(
+                vec![service(vec![method(".api.Outer.NestedRequest", false)])],
+                false
+            )])
+            .is_empty()
+        );
+        // A resource with no field that has a CEL type.
+        assert!(
+            planned(vec![api(
+                vec![service(vec![method(".api.ListThingsRequest", false)])],
+                true
+            )])
+            .is_empty()
         );
     }
 }

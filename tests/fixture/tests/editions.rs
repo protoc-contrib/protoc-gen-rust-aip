@@ -88,3 +88,39 @@ fn clears_an_optional_output_only_field() {
     gadget.clear_output_only();
     assert_eq!(gadget.serial, None);
 }
+
+// --- proto2 -----------------------------------------------------------------
+
+use aip_fixture::proto::example::v1::{Lamp, Shade};
+
+#[test]
+fn a_required_field_is_always_implied() {
+    // `required` has no presence of its own in buffa -- a message that parsed
+    // has it set -- so it is implied even at its zero value, as protobuf-go's
+    // `Has` reports it.
+    let lamp = Lamp {
+        shade: Shade::SHADE_LIGHT,
+        ..Default::default()
+    };
+    assert_eq!(lamp.implied_update_mask(), ["shade"]);
+
+    let lamp = Lamp {
+        label: Some(String::new()),
+        ..Default::default()
+    };
+    assert_eq!(lamp.implied_update_mask(), ["shade", "label"]);
+}
+
+#[test]
+fn a_changed_optional_immutable_field_is_reported() {
+    let stored = Lamp {
+        model: Some("m1".to_owned()),
+        ..Default::default()
+    };
+    let update = Lamp {
+        model: Some("m2".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(update.immutable_changes(&stored), ["model"]);
+    assert!(Lamp::default().immutable_changes(&stored).is_empty());
+}

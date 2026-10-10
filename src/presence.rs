@@ -98,6 +98,26 @@ impl Scope {
     }
 }
 
+impl Scope {
+    /// Whether `field`, declared in this scope, is required: proto2
+    /// `required`, or editions `LEGACY_REQUIRED`. buffa generates it as a bare
+    /// value with no presence of its own -- a message that parses has it set.
+    #[must_use]
+    pub fn is_required(self, field: &FieldDescriptorProto) -> bool {
+        if field.label == Some(field_descriptor_proto::Label::LABEL_REQUIRED) {
+            return true;
+        }
+        let Self::Editions(inherited) = self else {
+            return false;
+        };
+        let features = field
+            .options
+            .as_option()
+            .and_then(|options| options.features.as_option());
+        field_presence(features).unwrap_or(inherited) == FieldPresence::LEGACY_REQUIRED
+    }
+}
+
 /// The `field_presence` a feature set sets, if it sets one.
 fn field_presence(features: Option<&FeatureSet>) -> Option<FieldPresence> {
     features

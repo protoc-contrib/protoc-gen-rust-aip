@@ -17,7 +17,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::emit::{doc, impl_for, package_depth};
+use crate::emit::{doc, impl_for, package_depth, short_name};
 use crate::idents::snake_case;
 use crate::messages::{Index, Kind};
 use crate::scan::{Format, Pattern, Reference, Registry, Resource, Segment};
@@ -611,7 +611,7 @@ fn emit_parent(
     // AIP-122 records no parent link, so the only evidence of one is that some
     // resource declares exactly the pattern this one is nested in.
     let parent_pattern = pattern.parent()?;
-    let (parent, index) = registry.find_by_pattern(&parent_pattern)?;
+    let (parent, index) = registry.find_by_pattern(&parent_pattern, &resource.package)?;
 
     let parent_variants = variant_names(parent, registry);
     let parent_variant = if parent.is_multi_pattern() {
@@ -809,7 +809,11 @@ fn variant_names(resource: &Resource, registry: &Registry) -> Vec<String> {
         candidates.push(
             pattern
                 .parent()
-                .and_then(|parent| registry.find_by_pattern(&parent).map(|(r, _)| r))
+                .and_then(|parent| {
+                    registry
+                        .find_by_pattern(&parent, &resource.package)
+                        .map(|(r, _)| r)
+                })
                 .map(|parent| format!("{}{}Name", parent.type_name, resource.type_name)),
         );
     }
@@ -961,11 +965,12 @@ fn emit_create_id(
 
     // AIP-133 names the request after the resource, which is also how the
     // format was found in the first place -- see `scan::create_requests`.
-    let request_fqn = format!(".{}.Create{}Request", resource.package, resource.type_name);
-    let request = index.get(&request_fqn)?;
-    if request.source_file != file {
-        return None;
-    }
+    // Nested or not -- protoc-gen-go-aip finds either -- but in the resource's
+    // own package and in this file.
+    let request_name = format!("Create{}Request", resource.type_name);
+    let request = index.in_file(file).find(|message| {
+        message.package == resource.package && short_name(&message.fqn) == request_name
+    })?;
     let field_name = format!("{}_id", snake_case(&segment.name));
     let field = request
         .fields
