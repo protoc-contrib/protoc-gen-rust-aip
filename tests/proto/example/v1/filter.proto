@@ -1,0 +1,87 @@
+// Fixture for the filter pass.
+//
+// Nothing here is annotated for filtering. Volume is the resource because
+// ListVolumesResponse has exactly one repeated message field, and Volume's
+// fields are what get declared.
+syntax = "proto3";
+
+package example.v1;
+
+import "google/api/resource.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+enum Genre {
+  GENRE_UNSPECIFIED = 0;
+  GENRE_FICTION = 1;
+  GENRE_NONFICTION = 2;
+}
+
+message Volume {
+  option (google.api.resource) = {
+    type: "example.com/Volume"
+    pattern: "volumes/{volume}"
+  };
+
+  string name = 1;
+  string title = 2;
+  int64 read_count = 3;
+  uint32 shelf = 4;
+  double rating = 5;
+  bool published = 6;
+  Genre genre = 7;
+  google.protobuf.Timestamp create_time = 8;
+  google.protobuf.Duration read_time = 9;
+
+  // No CEL type, all skipped rather than rejected, as by protoc-gen-go-aip:
+  bytes checksum = 10;          // bytes
+  Cover cover = 11;             // a message that is not a Timestamp or Duration
+  repeated string tags = 12;    // a repeated field
+  map<string, string> labels = 13;
+}
+
+message Cover {
+  string url = 1;
+}
+
+// `order_by` and `page_token` are carried and get nothing: they are the query
+// layer's.
+message ListVolumesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string filter = 3;
+  string order_by = 4;
+}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+  string next_page_token = 2;
+}
+
+// Lists a resource but carries no `filter`, so nothing is emitted for it.
+message ListCoversRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListCoversResponse {
+  repeated Cover covers = 1;
+  string next_page_token = 2;
+}
+
+// Two repeated message fields, so the response does not say which is the
+// resource and nothing is emitted for its request.
+message BrowseRequest {
+  string filter = 1;
+}
+
+message BrowseResponse {
+  repeated Volume volumes = 1;
+  repeated Cover covers = 2;
+}
+
+service Shelf {
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+  rpc ListCovers(ListCoversRequest) returns (ListCoversResponse);
+  rpc Browse(BrowseRequest) returns (BrowseResponse);
+}

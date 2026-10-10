@@ -9,6 +9,7 @@
 
 pub mod behavior;
 pub mod field_mask;
+pub mod filter;
 pub mod resource;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -114,6 +115,7 @@ pub fn render(
 
     let generated: BTreeSet<String> = request.file_to_generate.iter().cloned().collect();
     let walks = behavior::plan(index, &generated);
+    let lists = filter::plan(index);
 
     // Proto package to what each of its files emitted, concatenated in
     // `file_to_generate` order so the output is stable across runs.
@@ -129,13 +131,19 @@ pub fn render(
         let creates = resource::emit_create_ids(name, index, registry, options.views);
         let behaviors = behavior::emit_file(name, index, &walks, &generated);
         let masks = field_mask::emit_file(name, index, registry);
-        if resources.is_empty() && creates.is_empty() && behaviors.is_empty() && masks.is_empty() {
+        let filters = filter::emit_file(name, index, &lists);
+        if resources.is_empty()
+            && creates.is_empty()
+            && behaviors.is_empty()
+            && masks.is_empty()
+            && filters.is_empty()
+        {
             continue;
         }
         by_package
             .entry(package)
             .or_default()
-            .push(quote! { #resources #creates #behaviors #masks });
+            .push(quote! { #resources #creates #behaviors #masks #filters });
     }
 
     let mut files = Vec::new();
