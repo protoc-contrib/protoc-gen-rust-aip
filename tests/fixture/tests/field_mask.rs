@@ -48,3 +48,92 @@ fn a_resource_annotating_nothing_gets_every_field() {
 // Carrier is deliberately absent: it declares no `google.api.resource`, so it
 // gets no list. A mask reaching `carrier.name` is checked by protovalidate
 // against the `field_mask.in` on the mask field, which needs nothing here.
+
+// --- implied_update_mask ----------------------------------------------------
+
+use aip_fixture::proto::example::v1::{Address, Carrier, Meter, Parcel, Unit, meter};
+
+#[test]
+fn an_empty_resource_implies_an_empty_mask() {
+    assert!(Shipment::default().implied_update_mask().is_empty());
+    assert!(Meter::default().implied_update_mask().is_empty());
+}
+
+#[test]
+fn implies_every_populated_writable_field_in_declaration_order() {
+    let shipment = Shipment {
+        reference: "r1".to_owned(),
+        carrier: Carrier::default().into(),
+        parcels: vec![Parcel::default()],
+        parcels_by_code: [("p1".to_owned(), Parcel::default())].into_iter().collect(),
+        origin: Address::default().into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        shipment.implied_update_mask(),
+        [
+            "reference",
+            "carrier",
+            "parcels",
+            "parcels_by_code",
+            "origin"
+        ]
+    );
+}
+
+#[test]
+fn never_implies_a_field_an_update_may_not_write() {
+    // Every unwritable field set, nothing writable: OUTPUT_ONLY, IDENTIFIER and
+    // IMMUTABLE are left out however they are populated.
+    let shipment = Shipment {
+        name: "shipments/s1".to_owned(),
+        tracking_id: "t1".to_owned(),
+        audit_log: vec!["created".to_owned()],
+        revision: 3,
+        etag: "e1".to_owned(),
+        ..Default::default()
+    };
+    assert!(shipment.implied_update_mask().is_empty());
+
+    let meter = Meter {
+        serial: "s1".to_owned(),
+        ..Default::default()
+    };
+    assert!(meter.implied_update_mask().is_empty());
+}
+
+#[test]
+fn reads_presence_as_protobuf_does() {
+    let meter = Meter {
+        // Explicit presence: set to zero still counts.
+        threshold: Some(0),
+        // A oneof member counts when it is the one set, even to zero.
+        reading: Some(meter::Reading::Count(0)),
+        ..Default::default()
+    };
+    assert_eq!(meter.implied_update_mask(), ["threshold", "count"]);
+
+    let meter = Meter {
+        // Implicit presence: populated when not the zero value.
+        level: 0.5,
+        unit: Unit::UNIT_LITRE.into(),
+        active: true,
+        calibration: vec![1],
+        reading: Some(meter::Reading::Label(String::new())),
+        ..Default::default()
+    };
+    assert_eq!(
+        meter.implied_update_mask(),
+        ["level", "unit", "active", "calibration", "label"]
+    );
+}
+
+#[test]
+fn negative_zero_is_populated() {
+    // protobuf-go reads a float's presence by bit pattern, and so does this.
+    let meter = Meter {
+        level: -0.0,
+        ..Default::default()
+    };
+    assert_eq!(meter.implied_update_mask(), ["level"]);
+}

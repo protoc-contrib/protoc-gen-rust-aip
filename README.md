@@ -24,7 +24,7 @@ Every pass is implemented.
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or a minted one |
-| `MUTABLE_PATHS` | AIP-134: which fields an update may write, for expanding an empty mask |
+| `MUTABLE_PATHS`, `implied_update_mask` | AIP-134: which fields an update may write, and the mask a client implies by omitting one |
 | `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 
@@ -105,7 +105,7 @@ disagree with the one that runs — decode a token the server never issued. Pars
 them in the query layer — [sqlx-query](https://github.com/sqlx-contrib/sqlx-query)
 does, for SQL.
 
-### `MUTABLE_PATHS`, and what is *not* generated for AIP-134
+### `MUTABLE_PATHS`, `implied_update_mask`, and what is *not* generated for AIP-134
 
 On each resource, which of its fields an update may write — everything not
 `OUTPUT_ONLY`, `IDENTIFIER` or `IMMUTABLE`. The three are one question, not
@@ -115,6 +115,7 @@ or it was settable once, on create.
 ```rust
 impl Shipment {
     pub const MUTABLE_PATHS: &'static [&'static str];
+    pub fn implied_update_mask(&self) -> Vec<&'static str>;
 }
 ```
 
@@ -135,10 +136,27 @@ second implementation of the same rule, reported differently, that a handler had
 to remember to call. An earlier cut of this PR generated exactly that; it was
 removed.
 
-What protovalidate cannot do is **expand**. AIP-134 reads an absent or empty
-mask as every writable field, and a server has to turn that into a list of paths
-to write. That is what the constant is for, and deriving it from the schema is
-the point — a new writable field joins it without anyone remembering to.
+What protovalidate cannot do is **expand**. AIP-134 gives a mask two
+shorthands, and a server has to turn each into a list of paths to write:
+
+- **`*`**, full replacement, is every writable field: `MUTABLE_PATHS`.
+- **An omitted mask** is every writable field the client *populated*:
+  `implied_update_mask()`, read off the resource in the request.
+
+```rust
+// The client sent no update_mask: write what it populated.
+let paths: Vec<&str> = shipment.implied_update_mask();
+```
+
+Populated is read as protobuf reads presence — protobuf-go's `Has`, which is
+what aip-go's `ImpliedUpdateMask` uses: an `optional` field, a message or a
+oneof member when set, even to its zero value; any other scalar when not its
+zero value; a repeated field or map when not empty. It is emitted on the owned
+message only, not on views: implying a mask means writing it, and a view is
+read-only.
+
+Deriving both from the schema is the point — a new writable field joins them
+without anyone remembering to.
 
 Which leaves the `field_mask.in` annotation restating what `field_behavior`
 already says. Keeping the two in step is a **lint's** job, the same one the
