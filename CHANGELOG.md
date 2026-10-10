@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.1.0...v0.2.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* a schema with a resource_reference to a type the request does not declare now fails to generate; set allow_unresolved_refs=true to keep skipping it.
+
+### Features
+
+* fail on a resource_reference to an unknown type ([#23](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/23)) ([e585787](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/e58578722f20d80d2d6001af1183a10869ed85ef))
+* generate a CEL filter environment for List requests ([#21](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/21)) ([2a0d6f8](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/2a0d6f8ae3f612e16bc8935a7568d81f66b3038d))
+* generate implied_update_mask on each resource ([#25](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/25)) ([6136577](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/61365776c45bbe057af9f168e85a6dcb16b2016c))
+
+
+### Bug Fixes
+
+* refuse a proposed nil UUID in the create-ID accessor ([#24](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/24)) ([0ebb3fc](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/0ebb3fcf9eceeac4c16ea67f4193f99bf2717d66))
+
 ## [0.1.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.1.0...v0.1.0) (2026-09-25)
 
 

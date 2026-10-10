@@ -3,7 +3,7 @@ members = ["tests/fixture"]
 
 [package]
 name = "protoc-gen-rust-aip"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "protoc plugin that emits Rust helpers for Google AIP-shaped APIs: typed resource names, create IDs, update-mask paths, the OUTPUT_ONLY clearing walk and the AIP-160 filter environment."
