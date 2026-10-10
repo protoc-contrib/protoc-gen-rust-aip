@@ -27,6 +27,11 @@ aip = { package = "aip-rs", version = "0.1" }
 # crate in generated code exactly when it types a segment as one. Parsing is
 # all it does -- minting an ID is the server's -- so no feature is needed.
 uuid = "1"
+# A filter is plain CEL. Only a schema with a List request carrying `filter`
+# needs this; the plugin names the crate exactly when it emits a filter
+# environment. The generated code needs no features; `chrono` is for the tests,
+# which build a `Volume` with a `timestamp(...)` and a `duration(...)` in it.
+cel = { version = "0.15", default-features = false, features = ["chrono"] }
 
 [build-dependencies]
 # The plugin as a library rather than as a `protoc` plugin binary: a build

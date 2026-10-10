@@ -26,12 +26,13 @@ Every pass is implemented.
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or a minted one |
 | `MUTABLE_PATHS` | AIP-134: which fields an update may write, for expanding an empty mask |
 | `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
+| Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 
 `REQUIRED` is **not** generated, deliberately — see [Field
 behavior](#field-behavior-clearing-is-generated-validating-is-protovalidates).
 
-List queries — `filter`, `order_by`, `page_token` — are **not** generated,
-unlike `protoc-gen-go-aip`: see [List queries](#list-queries-are-the-query-layers).
+`order_by` and `page_token` are **not** generated: see [List
+queries](#list-queries-filter-gets-an-environment-ordering-and-paging-are-the-query-layers).
 
 `tests/fixture/` compiles the schema in `tests/proto` with **both** `buffa` and this
 plugin and exercises the result, so the generated code is type-checked against
@@ -45,20 +46,64 @@ Only what a schema actually uses:
 | --- | --- |
 | [`aip-rs`](https://crates.io/crates/aip-rs) (as `aip`) | always |
 | `uuid` | a resource ID is annotated `UUID4` |
+| [`cel`](https://crates.io/crates/cel) 0.15 | a List request carries a `filter` |
 
 
 ## What it generates
 
-### List queries are the query layer's
+### List queries: `filter` gets an environment, ordering and paging are the query layer's
 
-Nothing is generated for a List request's `filter`, `order_by` or `page_token`.
-What they mean is decided where the query runs: which fields a client may name
-is the mapping from AIP paths to columns, a filter is only as good as the SQL it
-becomes, and a page token is whatever the pager can resume from — a keyset
-cursor, not an offset. A parser generated from the `.proto` knows none of that,
-so it could only disagree with the one that runs: accept a field the query
-refuses, or decode a token the server never issued. Parse them in the query
-layer — [sqlx-query](https://github.com/sqlx-contrib/sqlx-query) does, for SQL.
+A request is a List request when a service method takes it and returns a
+message with a single repeated message field; that field's type is the
+resource. Nothing is annotated — the same rule `protoc-gen-go-aip` uses. For
+each one with a `string filter` field, the counterpart of Go's `FilterEnv`:
+
+```rust
+/// The CEL environment `filter` expressions on `ListVolumesRequest` compile in.
+pub static LIST_VOLUMES_FILTER_ENV: LazyLock<Arc<cel::Env>>;
+
+impl ListVolumesRequest {
+    pub fn parse_filter(&self) -> Result<Option<cel::Program>, cel::ParseErrors>;
+}
+```
+
+The environment is CEL's standard library **without macros or optional
+syntax** — `exists`, `has` and the like stay plain calls rather than expanding
+to comprehensions, and `a.?b` does not parse; neither has a reading as a query —
+with the resource registered as a struct type: every field with a CEL type,
+mapped as Go maps them. Integers of every width and signedness are `int`, as
+are enums; `Timestamp` and `Duration` are themselves; `bytes`, other messages,
+repeated fields and maps are left out.
+
+`parse_filter` returns `None` for a blank filter and otherwise compiles it.
+The expression is plain CEL, not AIP-160's CEL-*like* grammar, so
+`title = "x" AND published` is a syntax error rather than something misread.
+
+**It checks syntax, and nothing else.** cel-rust has no type checker and no
+variable declarations, so the registered fields constrain a `Volume{...}`
+literal, not the names a filter may use: `title > 3` and `shoe_size == 9` both
+compile, where cel-go's checker rejects them. Names, types, and which fields a
+client may *actually* filter by are the query layer's — the last through its
+fail-closed column map.
+
+The environment is the one a filter evaluates in, too. To evaluate in memory,
+bind the row's fields on a context over it:
+
+```rust
+let mut context = cel::Context::with_env(Arc::clone(&LIST_VOLUMES_FILTER_ENV));
+context.add_variable_from_value("title", volume.title.clone());
+program.execute(&context)?;
+```
+
+The generated code needs no `cel` features; a filter calling `timestamp(...)`
+or `duration(...)` needs `chrono`.
+
+Nothing is generated for `order_by` or `page_token`. How a request sorts is the
+columns the query orders by, and a page token is whatever the pager encodes in
+it; a parser generated from the `.proto` knows neither, so it could only
+disagree with the one that runs — decode a token the server never issued. Parse
+them in the query layer — [sqlx-query](https://github.com/sqlx-contrib/sqlx-query)
+does, for SQL.
 
 ### `MUTABLE_PATHS`, and what is *not* generated for AIP-134
 
@@ -162,7 +207,8 @@ with `(buf.validate.field).required` — or a `min_len`, for a presence-less
 scalar — and a server running protovalidate already enforces that. A second
 check generated from the AIP annotation could only drift out of agreement with
 the one that actually runs, which is the same argument this plugin makes
-against [generating List query parsers](#list-queries-are-the-query-layers).
+against [generating `order_by` and `page_token`
+parsers](#list-queries-filter-gets-an-environment-ordering-and-paging-are-the-query-layers).
 
 What *is* worth having is a lint that the two annotations agree: a field marked
 REQUIRED with nothing in `buf.validate` enforcing it is a field the schema
