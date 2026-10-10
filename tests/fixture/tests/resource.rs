@@ -281,6 +281,21 @@ fn a_proposed_id_that_is_not_a_uuid_fails_as_that_segment() {
 }
 
 #[test]
+fn a_proposed_nil_uuid_is_rejected() {
+    // It parses as a UUID, but no name built from it would validate -- so it is
+    // refused here rather than accepted and then failing on the name.
+    let request = proto::example::v1::CreateCollectionRequest {
+        collection_id: uuid::Uuid::nil().to_string(),
+        ..Default::default()
+    };
+    let error = request.parse_collection_id().unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        aip::resource::ParseErrorKind::InvalidValue { name, .. } if name == "collection"
+    ));
+}
+
+#[test]
 fn a_child_gets_an_accessor_for_its_own_id_only() {
     // Item's own {item} is UUID-typed, so CreateItemRequest parses it. Its
     // {organization} comes from the parent's create request, which is what

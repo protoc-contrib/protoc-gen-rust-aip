@@ -995,7 +995,8 @@ fn emit_create_id(
          `google.api.field_info`. A `string` ID gets no accessor: what a valid \
          one is, the schema does not state.\n\n\
          # Errors\n\n\
-         If the caller proposed an ID that is not a UUID. Reported as the same \
+         If the caller proposed an ID that is not a UUID, or is the nil UUID, \
+         which no `{}` validates with. Reported as the same \
          [`ParseError`](::aip::resource::ParseError) an unparseable `{}` segment \
          produces when reading a whole name, so a call site handles one error \
          type either way.",
@@ -1004,6 +1005,7 @@ fn emit_create_id(
         field.name,
         resource.name_type(),
         buffa_codegen::idents::make_field_ident(&format!("{}_id", snake_case(&segment.name))),
+        resource.name_type(),
         segment.name,
     ));
 
@@ -1022,6 +1024,14 @@ fn emit_create_id(
                     return ::core::result::Result::Ok(::core::option::Option::None);
                 }
                 match <::uuid::Uuid as ::core::str::FromStr>::from_str(&self.#ident) {
+                    // The nil UUID parses, but no name built from it validates.
+                    ::core::result::Result::Ok(value) if value.is_nil() => {
+                        ::core::result::Result::Err(#name_type::compiled().invalid_value(
+                            &self.#ident,
+                            #variable,
+                            "the nil UUID is not an ID",
+                        ))
+                    }
                     ::core::result::Result::Ok(value) => {
                         ::core::result::Result::Ok(::core::option::Option::Some(value))
                     }
