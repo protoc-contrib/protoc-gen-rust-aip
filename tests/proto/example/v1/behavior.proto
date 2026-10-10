@@ -75,3 +75,30 @@ message Event {
     Carrier handoff = 4;
   }
 }
+
+// A resource with one writable field of every remaining shape, for
+// `implied_update_mask`: explicit and implicit presence, a oneof, an enum, a
+// float, and an IMMUTABLE field that is never implied however it is set.
+message Meter {
+  option (google.api.resource) = {
+    type: "example.com/Meter"
+    pattern: "meters/{meter}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  optional int32 threshold = 2;
+  double level = 3;
+  Unit unit = 4;
+  bool active = 5;
+  bytes calibration = 6;
+  oneof reading {
+    string label = 7;
+    int64 count = 8;
+  }
+  string serial = 9 [(google.api.field_behavior) = IMMUTABLE];
+}
+
+enum Unit {
+  UNIT_UNSPECIFIED = 0;
+  UNIT_LITRE = 1;
+}

@@ -1,4 +1,5 @@
-//! Emits `MUTABLE_PATHS`: which fields of a resource an update may write.
+//! Emits `MUTABLE_PATHS` — which fields of a resource an update may write —
+//! and `implied_update_mask`, the mask AIP-134 implies when a client omits one.
 //!
 //! Read off `google.api.field_behavior` — everything not `OUTPUT_ONLY`,
 //! `IDENTIFIER` or `IMMUTABLE`. The three are one question, not three: the
@@ -23,10 +24,15 @@
 //! request. A check generated here would be a second implementation of it,
 //! reported differently, that a handler had to remember to call.
 //!
-//! What protovalidate cannot do is *expand*. AIP-134 reads an absent or empty
-//! mask as every writable field, and a server has to turn that into a list of
-//! paths to write. That list is this constant, and deriving it from the schema
-//! is the point: a new writable field joins it without anyone remembering to.
+//! What protovalidate cannot do is *expand*. AIP-134 gives a mask two
+//! shorthands, and a server has to turn each into a list of paths to write:
+//!
+//! - `*`, full replacement, is every writable field — `MUTABLE_PATHS`;
+//! - an omitted mask is every writable field the client *populated* —
+//!   `implied_update_mask()`.
+//!
+//! Deriving both from the schema is the point: a new writable field joins them
+//! without anyone remembering to.
 //!
 //! Which leaves the `field_mask.in` annotation as a restatement of what
 //! `field_behavior` already says. Keeping the two in step is a lint's job — the
@@ -35,10 +41,10 @@
 //! See <https://google.aip.dev/134#field-masks>.
 
 use proc_macro2::{Literal, TokenStream};
-use quote::quote;
+use quote::{format_ident, quote};
 
 use super::{doc, short_name};
-use crate::messages::{Field, Index};
+use crate::messages::{Field, Index, Kind, Message};
 use crate::scan::{Registry, Resource};
 
 /// Whether an update may write `field`.
@@ -86,8 +92,10 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
         "The field paths an update may write on `{short}`.\n\n\
          Every field not annotated `OUTPUT_ONLY`, `IDENTIFIER` or \
          `IMMUTABLE`.\n\n\
-         This is the *expansion* of an absent or empty `update_mask`, which \
-         AIP-134 reads as every writable field. It is not the check that a mask \
+         This is the *expansion* of the `*` mask, full replacement, which \
+         AIP-134 reads as every writable field; an omitted mask is narrower — see \
+         [`implied_update_mask`](Self::implied_update_mask). It is not the check \
+         that a mask \
          names only these -- that is `(buf.validate.field).field_mask.in` on the \
          mask itself, which protovalidate runs along with every other rule on \
          the request.\n\n\
@@ -96,10 +104,87 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
          field this constant expands to and protovalidate then rejects.",
     ));
 
+    let checks: Vec<TokenStream> = message
+        .fields
+        .iter()
+        .filter(|field| writable(field))
+        .map(|field| {
+            let name = Literal::string(&field.name);
+            let populated = populated(message, field);
+            quote! {
+                if #populated {
+                    paths.push(#name);
+                }
+            }
+        })
+        .collect();
+    let implied_doc = doc(&format!(
+        "The update mask AIP-134 implies when a client omits one: every field \
+         of [`MUTABLE_PATHS`](Self::MUTABLE_PATHS) this `{short}` populates, in \
+         declaration order.\n\n\
+         Populated as protobuf reads presence: a field with explicit presence — \
+         `optional`, a message, a oneof member — when set, even to its zero \
+         value; any other scalar when not its zero value; a repeated field or a \
+         map when not empty.\n\n\
+         Reads `self` and returns the paths; store them on the request's \
+         `update_mask` when it is empty.\n\n\
+         See <https://google.aip.dev/134#field-masks>.",
+    ));
+
     Some(quote! {
         impl #path {
             #paths_doc
             pub const MUTABLE_PATHS: &'static [&'static str] = &[#( #literals ),*];
+
+            #implied_doc
+            #[must_use]
+            pub fn implied_update_mask(&self) -> ::std::vec::Vec<&'static str> {
+                let mut paths = ::std::vec::Vec::new();
+                #( #checks )*
+                paths
+            }
         }
     })
+}
+
+/// An expression that is true when `field` is populated on `self`, the way
+/// protobuf reads presence — protobuf-go's `Has`.
+fn populated(message: &Message, field: &Field) -> TokenStream {
+    let ident = buffa_codegen::idents::make_field_ident(&field.name);
+    if let Some(oneof) = &field.oneof {
+        // Members share one `Option<Enum>`; this one is populated when it is
+        // the member set.
+        let oneof_ident = buffa_codegen::idents::make_field_ident(oneof);
+        let enum_path: TokenStream = format!(
+            "{}::{}",
+            message.oneof_module,
+            buffa_codegen::idents::to_upper_camel_case(oneof),
+        )
+        .parse()
+        .expect("a oneof path built from proto identifiers is a valid Rust path");
+        let variant = format_ident!(
+            "{}",
+            buffa_codegen::idents::to_upper_camel_case(&field.name)
+        );
+        return quote! {
+            ::core::matches!(self.#oneof_ident, ::core::option::Option::Some(#enum_path::#variant(_)))
+        };
+    }
+    if field.repeated || field.is_map {
+        return quote! { !self.#ident.is_empty() };
+    }
+    if field.proto3_optional {
+        return quote! { self.#ident.is_some() };
+    }
+    match field.kind {
+        Kind::Message => quote! { self.#ident.as_option().is_some() },
+        // By bit pattern, as protobuf-go does: `-0.0` is not the zero value.
+        Kind::Double => quote! { self.#ident.to_bits() != 0 },
+        // Any other scalar is populated when it is not its zero value.
+        Kind::String | Kind::Bytes => quote! { !self.#ident.is_empty() },
+        Kind::Bool => quote! { self.#ident },
+        Kind::Integer => quote! { self.#ident != 0 },
+        // `to_i32`, so an unknown value received on the wire counts too.
+        Kind::Enum => quote! { self.#ident.to_i32() != 0 },
+    }
 }
