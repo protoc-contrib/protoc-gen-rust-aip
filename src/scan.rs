@@ -256,30 +256,85 @@ pub struct Registry {
     /// Every resolved reference, grouped by the file that declares the
     /// referring field.
     pub references: BTreeMap<String, Vec<Reference>>,
-    by_type: BTreeMap<String, usize>,
+    /// Every declaration of each type, in the order the walk found them. More
+    /// than one when versions of an API -- `v1` and `v2` -- each declare it.
+    by_type: BTreeMap<String, Vec<usize>>,
+}
+
+/// What a resource type names, as seen from one package.
+enum Lookup {
+    /// The declaration in that package, or the only one there is.
+    Found(usize),
+    /// No package declares it.
+    Missing,
+    /// Several packages declare it and none is the one asking.
+    Ambiguous(Vec<String>),
 }
 
 impl Registry {
-    /// The resource declared with `resource_type`, if the request has one.
+    /// The first declaration of `resource_type`, if the request has one. See
+    /// [`Registry::resolve`] for the one a given package means.
     #[must_use]
     pub fn by_type(&self, resource_type: &str) -> Option<&Resource> {
-        self.by_type.get(resource_type).map(|i| &self.resources[*i])
+        self.by_type
+            .get(resource_type)
+            .and_then(|indices| indices.first())
+            .map(|i| &self.resources[*i])
     }
 
-    /// The resource and pattern index whose pattern is exactly `pattern`.
+    /// The declaration of `resource_type` that `package` means: its own, if
+    /// it declares one -- each version of an API refers to its own resources --
+    /// else the only one there is.
+    fn resolve(&self, resource_type: &str, package: &str) -> Lookup {
+        let Some(indices) = self.by_type.get(resource_type) else {
+            return Lookup::Missing;
+        };
+        if let Some(own) = indices
+            .iter()
+            .find(|i| self.resources[**i].package == package)
+        {
+            return Lookup::Found(*own);
+        }
+        match indices.as_slice() {
+            [only] => Lookup::Found(*only),
+            _ => Lookup::Ambiguous(
+                indices
+                    .iter()
+                    .map(|i| self.resources[*i].package.clone())
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The resource and pattern index whose pattern is exactly `pattern`, as
+    /// seen from `package`.
     ///
     /// This is how a child finds its parent: AIP-122 does not record the
     /// relationship, so the only evidence that `publishers/{publisher}` is
-    /// `Book`'s parent is that some resource declares that exact pattern.
+    /// `Book`'s parent is that some resource declares that exact pattern. When
+    /// several packages declare it -- versions of one API -- the one in
+    /// `package` wins, and with none there and more than one elsewhere there is
+    /// no telling which was meant, so there is no parent.
     #[must_use]
-    pub fn find_by_pattern(&self, pattern: &Pattern) -> Option<(&Resource, usize)> {
-        self.resources.iter().find_map(|resource| {
+    pub fn find_by_pattern(&self, pattern: &Pattern, package: &str) -> Option<(&Resource, usize)> {
+        let mut found = self.resources.iter().filter_map(|resource| {
             resource
                 .patterns
                 .iter()
                 .position(|candidate| candidate.matches(pattern))
                 .map(|index| (resource, index))
-        })
+        });
+        let candidates: Vec<(&Resource, usize)> = found.by_ref().collect();
+        if let Some(own) = candidates
+            .iter()
+            .find(|(resource, _)| resource.package == package)
+        {
+            return Some(*own);
+        }
+        match candidates.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
     }
 
     /// The resources declared in `file`, in declaration order.
@@ -321,10 +376,15 @@ impl Registry {
                         source: render(&segments),
                         segments,
                     };
-                    let Some((owner, _)) = self.find_by_pattern(&prefix) else {
+                    let Some((owner, _)) = self.find_by_pattern(&prefix, &resource.package) else {
                         continue;
                     };
-                    let request = format!("Create{}Request", owner.type_name);
+                    // The owner's own package: one version's `field_info` does
+                    // not type another's segment.
+                    let request = (
+                        owner.package.clone(),
+                        format!("Create{}Request", owner.type_name),
+                    );
                     let id_field = format!("{}_id", segment.name);
                     let format = create_requests
                         .get(&request)
@@ -350,17 +410,26 @@ impl Registry {
 
     fn insert(&mut self, resource: Resource) -> Result<()> {
         let index = self.resources.len();
-        if let Some(previous) = self.by_type.get(&resource.resource_type) {
-            // Two declarations of one type would make `by_type` -- and so every
-            // reference to it -- resolve arbitrarily.
+        let declared = self
+            .by_type
+            .entry(resource.resource_type.clone())
+            .or_default();
+        // One per package: versions of an API each declare their resources,
+        // but two in one package would leave a reference from it nothing to
+        // choose by.
+        if let Some(previous) = declared
+            .iter()
+            .find(|i| self.resources[**i].package == resource.package)
+        {
             bail!(
-                "resource type {:?} is declared twice: in {} and in {}",
+                "resource type {:?} is declared twice in package {:?}: in {} and in {}",
                 resource.resource_type,
+                resource.package,
                 self.resources[*previous].source_file,
                 resource.source_file,
             );
         }
-        self.by_type.insert(resource.resource_type.clone(), index);
+        declared.push(index);
         self.resources.push(resource);
         Ok(())
     }
@@ -409,9 +478,9 @@ pub fn gather(request: &CodeGeneratorRequest, allow_unresolved_refs: bool) -> Re
     Ok(registry)
 }
 
-/// Every `Create<Type>Request` in the request, by message name, mapping each of
-/// its field names to that field's declared format.
-type CreateRequests = BTreeMap<String, BTreeMap<String, Format>>;
+/// Every `Create<Type>Request` in the request, by package and message name,
+/// mapping each of its field names to that field's declared format.
+type CreateRequests = BTreeMap<(String, String), BTreeMap<String, Format>>;
 
 /// Every `Create<Type>Request` message in the request, by name, with the
 /// `google.api.field_info` format of each of its fields.
@@ -423,22 +492,31 @@ type CreateRequests = BTreeMap<String, BTreeMap<String, Format>>;
 fn create_requests(request: &CodeGeneratorRequest) -> CreateRequests {
     let mut out = BTreeMap::new();
     for file in &request.proto_file {
+        let package = file.package.clone().unwrap_or_default();
         for message in &file.message_type {
-            let Some(name) = message.name.as_deref() else {
-                continue;
-            };
-            if !name.starts_with("Create") || !name.ends_with("Request") {
-                continue;
-            }
-            let fields: BTreeMap<String, Format> = message
-                .field
-                .iter()
-                .filter_map(|field| Some((field.name.clone()?, field_format(field))))
-                .collect();
-            out.insert(name.to_owned(), fields);
+            collect_create_requests(message, &package, &mut out);
         }
     }
     out
+}
+
+/// Records `message` if it is a `Create<Type>Request`, then its nested
+/// messages: protoc-gen-go-aip finds a nested one too.
+fn collect_create_requests(message: &DescriptorProto, package: &str, out: &mut CreateRequests) {
+    if let Some(name) = message.name.as_deref()
+        && name.starts_with("Create")
+        && name.ends_with("Request")
+    {
+        let fields: BTreeMap<String, Format> = message
+            .field
+            .iter()
+            .filter_map(|field| Some((field.name.clone()?, field_format(field))))
+            .collect();
+        out.insert((package.to_owned(), name.to_owned()), fields);
+    }
+    for nested in &message.nested_type {
+        collect_create_requests(nested, package, out);
+    }
 }
 
 /// The declared format of a field, from `google.api.field_info`.
@@ -628,27 +706,27 @@ fn collect_message_references(
     let name = message.name.as_deref().unwrap_or_default();
     let scope = scope.message(message);
     for field in &message.field {
-        match resolve_reference(field, parents, name, scope, registry) {
+        match resolve_reference(field, parents, name, package, scope, registry) {
             Resolution::Resolved(reference) => found.push(reference),
-            Resolution::Unknown(resource_type) if strict => {
-                let message = parents
-                    .iter()
-                    .copied()
-                    .chain([name])
-                    .collect::<Vec<_>>()
-                    .join(".");
+            Resolution::Ambiguous(resource_type, packages) if strict => {
                 let field = field.name.as_deref().unwrap_or_default();
-                let prefix = if package.is_empty() {
-                    String::new()
-                } else {
-                    format!("{package}.")
-                };
                 bail!(
-                    "{prefix}{message}.{field}: reference to unknown type {resource_type:?} \
-                     (set allow_unresolved_refs=true to skip)"
+                    "{}.{field}: reference to type {resource_type:?} is ambiguous: it is \
+                     declared in {} but not in {package:?} (set allow_unresolved_refs=true \
+                     to skip)",
+                    qualified(package, parents, name),
+                    packages.join(", "),
                 );
             }
-            Resolution::Skipped | Resolution::Unknown(_) => {}
+            Resolution::Unknown(resource_type) if strict => {
+                let field = field.name.as_deref().unwrap_or_default();
+                bail!(
+                    "{}.{field}: reference to unknown type {resource_type:?} \
+                     (set allow_unresolved_refs=true to skip)",
+                    qualified(package, parents, name),
+                );
+            }
+            Resolution::Skipped | Resolution::Unknown(_) | Resolution::Ambiguous(..) => {}
         }
     }
 
@@ -668,6 +746,21 @@ fn collect_message_references(
     Ok(())
 }
 
+/// A message's fully-qualified proto name, without the leading dot.
+fn qualified(package: &str, parents: &[&str], name: &str) -> String {
+    let message = parents
+        .iter()
+        .copied()
+        .chain([name])
+        .collect::<Vec<_>>()
+        .join(".");
+    if package.is_empty() {
+        message
+    } else {
+        format!("{package}.{message}")
+    }
+}
+
 /// What a field's `google.api.resource_reference` comes to.
 enum Resolution {
     /// A reference to a resource the request declares.
@@ -676,12 +769,16 @@ enum Resolution {
     Skipped,
     /// A reference to this resource type, which the request does not declare.
     Unknown(String),
+    /// A reference to this resource type, declared in these packages, none of
+    /// them the referring one.
+    Ambiguous(String, Vec<String>),
 }
 
 fn resolve_reference(
     field: &FieldDescriptorProto,
     parents: &[&str],
     message_name: &str,
+    package: &str,
     scope: Scope,
     registry: &Registry,
 ) -> Resolution {
@@ -701,8 +798,12 @@ fn resolve_reference(
     if !is_string(field) {
         return Resolution::Skipped;
     }
-    let Some(resource) = registry.by_type.get(&reference.r#type).copied() else {
-        return Resolution::Unknown(reference.r#type.clone());
+    let resource = match registry.resolve(&reference.r#type, package) {
+        Lookup::Found(resource) => resource,
+        Lookup::Missing => return Resolution::Unknown(reference.r#type.clone()),
+        Lookup::Ambiguous(packages) => {
+            return Resolution::Ambiguous(reference.r#type.clone(), packages);
+        }
     };
     let Some(field_name) = field.name.clone() else {
         return Resolution::Skipped;
@@ -888,6 +989,121 @@ mod tests {
         }
     }
 
+    /// `pkg.Thing` declaring `example.com/Thing` with pattern `things/{thing}`.
+    fn declaring(package: &str) -> FileDescriptorProto {
+        let mut options = MessageOptions::default();
+        options.set_extension(
+            &RESOURCE,
+            ResourceDescriptor {
+                r#type: "example.com/Thing".to_owned(),
+                pattern: vec!["things/{thing}".to_owned()],
+                ..Default::default()
+            },
+        );
+        let name = FieldDescriptorProto {
+            name: Some("name".to_owned()),
+            number: Some(1),
+            r#type: Some(field_descriptor_proto::Type::TYPE_STRING),
+            label: Some(field_descriptor_proto::Label::LABEL_OPTIONAL),
+            ..Default::default()
+        };
+        FileDescriptorProto {
+            name: Some(format!("{package}.proto")),
+            package: Some(package.to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![DescriptorProto {
+                name: Some("Thing".to_owned()),
+                field: vec![name],
+                options: options.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// `pkg.Holder` with a `thing` field referencing `example.com/Thing`.
+    fn referencing(mut file: FileDescriptorProto) -> FileDescriptorProto {
+        use crate::annotations::google::api::ResourceReference;
+
+        let mut options = FieldOptions::default();
+        options.set_extension(
+            &RESOURCE_REFERENCE,
+            ResourceReference {
+                r#type: "example.com/Thing".to_owned(),
+                ..Default::default()
+            },
+        );
+        file.message_type.push(DescriptorProto {
+            name: Some("Holder".to_owned()),
+            field: vec![FieldDescriptorProto {
+                name: Some("thing".to_owned()),
+                number: Some(1),
+                r#type: Some(field_descriptor_proto::Type::TYPE_STRING),
+                label: Some(field_descriptor_proto::Label::LABEL_OPTIONAL),
+                options: options.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        file
+    }
+
+    fn generating(files: Vec<FileDescriptorProto>) -> CodeGeneratorRequest {
+        CodeGeneratorRequest {
+            file_to_generate: files.iter().filter_map(|file| file.name.clone()).collect(),
+            proto_file: files,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn each_version_binds_to_its_own_declaration() {
+        let request = generating(vec![
+            referencing(declaring("a.v1")),
+            referencing(declaring("a.v2")),
+        ]);
+        let registry = gather(&request, false).unwrap();
+        for (file, package) in [("a.v1.proto", "a.v1"), ("a.v2.proto", "a.v2")] {
+            let reference = &registry.references[file][0];
+            assert_eq!(registry.resources[reference.resource].package, package);
+        }
+    }
+
+    #[test]
+    fn a_reference_from_a_third_package_is_ambiguous() {
+        let mut third = referencing(FileDescriptorProto {
+            name: Some("c.proto".to_owned()),
+            package: Some("c.v1".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            ..Default::default()
+        });
+        third
+            .message_type
+            .retain(|message| message.name.as_deref() == Some("Holder"));
+        let request = generating(vec![declaring("a.v1"), declaring("a.v2"), third.clone()]);
+        let error = gather(&request, false).unwrap_err().to_string();
+        assert!(
+            error.starts_with("c.v1.Holder.thing: reference to type"),
+            "{error}"
+        );
+        assert!(error.contains("a.v1, a.v2"), "{error}");
+        // And a unique declaration elsewhere is not ambiguous.
+        let request = generating(vec![declaring("a.v1"), third]);
+        assert!(gather(&request, false).is_ok());
+    }
+
+    #[test]
+    fn two_declarations_in_one_package_fail() {
+        let mut twice = declaring("a.v1");
+        twice.message_type.push(twice.message_type[0].clone());
+        twice.message_type[1].name = Some("Other".to_owned());
+        let error = gather(&generating(vec![twice]), false).unwrap_err();
+        assert!(
+            error.to_string().contains("declared twice in package"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_reference_to_an_unknown_type_fails_naming_the_field() {
         let error = gather(&unresolved_request(true), false).unwrap_err();
@@ -915,9 +1131,9 @@ mod tests {
         name: &str,
         field: &str,
         format: Format,
-    ) -> (String, BTreeMap<String, Format>) {
+    ) -> ((String, String), BTreeMap<String, Format>) {
         (
-            name.to_owned(),
+            ("test.v1".to_owned(), name.to_owned()),
             [(field.to_owned(), format)].into_iter().collect(),
         )
     }

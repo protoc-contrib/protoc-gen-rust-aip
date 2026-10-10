@@ -137,3 +137,45 @@ fn negative_zero_is_populated() {
     };
     assert_eq!(meter.implied_update_mask(), ["level"]);
 }
+
+// --- immutable_changes ------------------------------------------------------
+
+#[test]
+fn a_changed_immutable_field_is_reported() {
+    let stored = Meter {
+        serial: "s1".to_owned(),
+        ..Default::default()
+    };
+    let update = Meter {
+        serial: "s2".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(update.immutable_changes(&stored), ["serial"]);
+}
+
+#[test]
+fn an_echoed_or_unset_immutable_field_is_not() {
+    let stored = Meter {
+        serial: "s1".to_owned(),
+        ..Default::default()
+    };
+    // Echoed back unchanged.
+    assert!(stored.clone().immutable_changes(&stored).is_empty());
+    // Left unset by the update.
+    assert!(Meter::default().immutable_changes(&stored).is_empty());
+}
+
+#[test]
+fn an_output_only_immutable_field_is_left_to_clearing() {
+    // Shipment.etag is OUTPUT_ONLY and IMMUTABLE: clear_output_only drops it,
+    // so a differing value is not a change the client made.
+    let update = Shipment {
+        etag: "e2".to_owned(),
+        ..Default::default()
+    };
+    let stored = Shipment {
+        etag: "e1".to_owned(),
+        ..Default::default()
+    };
+    assert!(update.immutable_changes(&stored).is_empty());
+}

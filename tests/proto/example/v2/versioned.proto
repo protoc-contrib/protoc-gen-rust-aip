@@ -1,0 +1,22 @@
+// A second version of the example API, declaring a resource type v1 declares
+// too. Each version's references, parents and create-ID formats must bind to
+// its own declaration: v1's `Collection` has a UUID-typed ID (from v1's
+// CreateCollectionRequest), and this one, with no create request, a string.
+syntax = "proto3";
+
+package example.v2;
+
+import "google/api/resource.proto";
+
+message Collection {
+  option (google.api.resource) = {
+    type: "example.com/Collection"
+    pattern: "collections/{collection}"
+  };
+
+  string name = 1;
+}
+
+message Shelf {
+  string collection = 1 [(google.api.resource_reference) = { type: "example.com/Collection" }];
+}

@@ -110,6 +110,11 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
         .filter(|field| writable(field))
         .map(|field| {
             let name = Literal::string(&field.name);
+            // A required field is set on every message that parsed -- what
+            // protobuf-go's `Has` reports -- and has no zero value to test.
+            if field.required {
+                return quote! { paths.push(#name); };
+            }
             let populated = populated(message, field);
             quote! {
                 if #populated {
@@ -131,20 +136,117 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
          See <https://google.aip.dev/134#field-masks>.",
     ));
 
+    let immutable_fn = immutable_changes_fn(message);
+    let implied_body = empty_or("paths", &checks);
+    let immutable_doc = doc(&format!(
+        "The `IMMUTABLE` fields of `{short}` this update sets to a value other \
+         than `existing`'s, in declaration order.\n\n\
+         AIP-203: a service rejects a request that changes an immutable field. \
+         An update that echoes the stored value back, or leaves the field \
+         unset, changes nothing and is not reported. Neither the implied mask \
+         nor `MUTABLE_PATHS` ever writes one, so without this check a changed \
+         value would be dropped silently rather than refused.\n\n\
+         ```text\n\
+         let changed = update.immutable_changes(&stored);\n\
+         if !changed.is_empty() {{ /* InvalidArgument */ }}\n\
+         ```",
+    ));
+
     Some(quote! {
         impl #path {
             #paths_doc
             pub const MUTABLE_PATHS: &'static [&'static str] = &[#( #literals ),*];
 
+            #immutable_doc
+            #[must_use]
+            #immutable_fn
+
             #implied_doc
             #[must_use]
             pub fn implied_update_mask(&self) -> ::std::vec::Vec<&'static str> {
-                let mut paths = ::std::vec::Vec::new();
-                #( #checks )*
-                paths
+                #implied_body
             }
         }
     })
+}
+
+/// `immutable_changes`, whose body is empty when `message` has no field to
+/// check -- where a read `existing` would be an unused-variable warning in every
+/// consumer.
+fn immutable_changes_fn(message: &Message) -> TokenStream {
+    let checks = immutable_checks(message);
+    if checks.is_empty() {
+        return quote! {
+            pub fn immutable_changes(&self, _existing: &Self) -> ::std::vec::Vec<&'static str> {
+                ::std::vec::Vec::new()
+            }
+        };
+    }
+    let body = empty_or("changed", &checks);
+    quote! {
+        pub fn immutable_changes(&self, existing: &Self) -> ::std::vec::Vec<&'static str> {
+            #body
+        }
+    }
+}
+
+/// A body collecting `statements`' pushes into a vector named `name`, or an
+/// empty vector outright when there are none -- a `mut` binding nothing pushes
+/// to would be an unused-mut warning in every consumer.
+fn empty_or(name: &str, statements: &[TokenStream]) -> TokenStream {
+    if statements.is_empty() {
+        return quote! { ::std::vec::Vec::new() };
+    }
+    let name = format_ident!("{name}");
+    quote! {
+        let mut #name = ::std::vec::Vec::new();
+        #( #statements )*
+        #name
+    }
+}
+
+/// One statement per writable-once field of `message` -- `IMMUTABLE` and not
+/// `OUTPUT_ONLY`, which clearing already drops -- pushing its name onto
+/// `changed` when `self` sets it to something other than `existing` holds.
+fn immutable_checks(message: &Message) -> Vec<TokenStream> {
+    message
+        .fields
+        .iter()
+        .filter(|field| field.immutable && !field.output_only)
+        .map(|field| {
+            let name = Literal::string(&field.name);
+            let ident = buffa_codegen::idents::make_field_ident(&field.name);
+            let set = if field.required {
+                quote! { true }
+            } else {
+                populated(message, field)
+            };
+            // By bit pattern for a float, as `populated` reads one, so `-0.0`
+            // and `NaN` compare the way protobuf-go's `proto.Equal` does not
+            // need to be argued about.
+            let differs = match (field.kind, field.optional) {
+                (Kind::Double, false) => {
+                    quote! { self.#ident.to_bits() != existing.#ident.to_bits() }
+                }
+                (Kind::Double, true) => quote! {
+                    self.#ident.map(|value| value.to_bits())
+                        != existing.#ident.map(|value| value.to_bits())
+                },
+                _ if field.oneof.is_some() => {
+                    let oneof = buffa_codegen::idents::make_field_ident(
+                        field.oneof.as_deref().unwrap_or_default(),
+                    );
+                    quote! { self.#oneof != existing.#oneof }
+                }
+                _ => quote! { self.#ident != existing.#ident },
+            };
+            quote! {
+                if #set && #differs {
+                    changed.push(#name);
+                }
+            }
+        })
+        .collect()
 }
 
 /// An expression that is true when `field` is populated on `self`, the way

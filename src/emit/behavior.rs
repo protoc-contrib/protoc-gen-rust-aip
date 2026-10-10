@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::{Result, bail};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -43,8 +44,15 @@ impl Walks {
 /// no walk, so nothing may recurse into one: the call would name a method that
 /// was never emitted. Reachability is therefore computed over generated
 /// messages only, which keeps the answer and the emitted code consistent.
-#[must_use]
-pub fn plan(index: &Index, generated: &BTreeSet<String>) -> Walks {
+///
+/// # Errors
+///
+/// If a generated message holds one from a file *not* being generated that has
+/// `OUTPUT_ONLY` fields beneath it. The walk cannot reach them, so a client
+/// could write them -- and an implied update mask, which names the holding
+/// field as one path, would then store them. Generate that file too.
+pub fn plan(index: &Index, generated: &BTreeSet<String>) -> Result<Walks> {
+    check_unreachable(index, generated)?;
     let candidates: Vec<&Message> = generated
         .iter()
         .flat_map(|file| index.in_file(file))
@@ -80,7 +88,78 @@ pub fn plan(index: &Index, generated: &BTreeSet<String>) -> Walks {
         }
     }
 
-    Walks { needed }
+    Ok(Walks { needed })
+}
+
+/// Fails if a generated message holds a message the walk cannot reach that has
+/// `OUTPUT_ONLY` fields beneath it. See [`plan`].
+fn check_unreachable(index: &Index, generated: &BTreeSet<String>) -> Result<()> {
+    // Which messages, in any file, have an OUTPUT_ONLY field at any depth --
+    // settled the same way `plan` settles its set, but over every file.
+    let all: Vec<&Message> = index.all().collect();
+    let mut dirty: BTreeSet<String> = all
+        .iter()
+        .filter(|message| message.fields.iter().any(|field| field.output_only))
+        .map(|message| message.fqn.clone())
+        .collect();
+    loop {
+        let mut added = false;
+        for message in &all {
+            if dirty.contains(&message.fqn) {
+                continue;
+            }
+            if message
+                .fields
+                .iter()
+                .filter_map(carried)
+                .any(|target| dirty.contains(&target))
+            {
+                dirty.insert(message.fqn.clone());
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+
+    for message in generated.iter().flat_map(|file| index.in_file(file)) {
+        for field in &message.fields {
+            let Some(target) = carried(field) else {
+                continue;
+            };
+            let Some(held) = index.get(&target) else {
+                continue;
+            };
+            if !generated.contains(&held.source_file) && dirty.contains(&target) {
+                bail!(
+                    "{}.{}: holds {}, which has OUTPUT_ONLY fields beneath it, but {} is not \
+                     being generated, so clear_output_only cannot reach them; generate {} too",
+                    message.fqn.trim_start_matches('.'),
+                    field.name,
+                    target.trim_start_matches('.'),
+                    held.source_file,
+                    held.source_file,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The message a field carries, if any, whichever file it is in. Unlike
+/// [`reachable`], which only answers for messages the walk can enter.
+fn carried(field: &Field) -> Option<String> {
+    if field.output_only {
+        return None;
+    }
+    if field.is_map {
+        field.map_value.clone()
+    } else if field.kind == crate::messages::Kind::Message {
+        Some(field.type_name.clone())
+    } else {
+        None
+    }
 }
 
 /// The message a field can carry a walk into, if any.
@@ -299,4 +378,94 @@ fn clear_oneof(
 /// `UpperCamelCase`.
 fn variant_ident(field: &str) -> proc_macro2::Ident {
     format_ident!("{}", buffa_codegen::idents::to_upper_camel_case(field))
+}
+
+#[cfg(test)]
+mod tests {
+    use buffa::ExtensionSet;
+    use buffa_codegen::generated::{
+        compiler::CodeGeneratorRequest,
+        descriptor::{
+            DescriptorProto, FieldDescriptorProto, FieldOptions, FileDescriptorProto,
+            field_descriptor_proto::{Label, Type},
+        },
+    };
+
+    use super::*;
+    use crate::annotations::google::api::{FIELD_BEHAVIOR, FieldBehavior};
+
+    /// `dep.proto` declares `dep.Audit` with an `OUTPUT_ONLY` `create_time`;
+    /// `api.proto` declares `api.Thing` holding one. Only `api.proto` is
+    /// generated.
+    fn request(audit_has_output_only: bool) -> CodeGeneratorRequest {
+        let mut options = FieldOptions::default();
+        if audit_has_output_only {
+            options.set_extension(&FIELD_BEHAVIOR, vec![FieldBehavior::OUTPUT_ONLY as i32]);
+        }
+        let audit = FileDescriptorProto {
+            name: Some("dep.proto".to_owned()),
+            package: Some("dep".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![DescriptorProto {
+                name: Some("Audit".to_owned()),
+                field: vec![FieldDescriptorProto {
+                    name: Some("create_time".to_owned()),
+                    number: Some(1),
+                    r#type: Some(Type::TYPE_STRING),
+                    label: Some(Label::LABEL_OPTIONAL),
+                    options: options.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let thing = FileDescriptorProto {
+            name: Some("api.proto".to_owned()),
+            package: Some("api".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![DescriptorProto {
+                name: Some("Thing".to_owned()),
+                field: vec![FieldDescriptorProto {
+                    name: Some("audit".to_owned()),
+                    number: Some(1),
+                    r#type: Some(Type::TYPE_MESSAGE),
+                    type_name: Some(".dep.Audit".to_owned()),
+                    label: Some(Label::LABEL_OPTIONAL),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        CodeGeneratorRequest {
+            file_to_generate: vec!["api.proto".to_owned()],
+            proto_file: vec![audit, thing],
+            ..Default::default()
+        }
+    }
+
+    fn plan_for(request: &CodeGeneratorRequest) -> Result<Walks> {
+        let index = crate::messages::gather(request);
+        let generated = request.file_to_generate.iter().cloned().collect();
+        plan(&index, &generated)
+    }
+
+    #[test]
+    fn output_only_fields_in_a_dependency_fail_generation() {
+        let error = plan_for(&request(true))
+            .err()
+            .expect("an unreachable OUTPUT_ONLY field");
+        assert_eq!(
+            error.to_string(),
+            "api.Thing.audit: holds dep.Audit, which has OUTPUT_ONLY fields beneath it, but \
+             dep.proto is not being generated, so clear_output_only cannot reach them; \
+             generate dep.proto too"
+        );
+    }
+
+    #[test]
+    fn a_dependency_with_nothing_output_only_is_fine() {
+        assert!(plan_for(&request(false)).is_ok());
+    }
 }

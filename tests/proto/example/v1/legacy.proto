@@ -1,0 +1,26 @@
+// Fixture for a proto2 file. Every `optional` field is an `Option<T>` in
+// buffa, and a `required` one a bare value with no presence of its own -- for
+// a closed enum, the enum itself rather than an `EnumValue`.
+syntax = "proto2";
+
+package example.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+enum Shade {
+  SHADE_LIGHT = 0;
+  SHADE_DARK = 1;
+}
+
+message Lamp {
+  option (google.api.resource) = {
+    type: "example.com/Lamp"
+    pattern: "lamps/{lamp}"
+  };
+
+  optional string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  required Shade shade = 2;
+  optional string label = 3;
+  optional string model = 4 [(google.api.field_behavior) = IMMUTABLE];
+}

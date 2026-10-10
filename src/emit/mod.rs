@@ -125,7 +125,7 @@ pub fn render(
         .collect();
 
     let generated: BTreeSet<String> = request.file_to_generate.iter().cloned().collect();
-    let walks = behavior::plan(index, &generated);
+    let walks = behavior::plan(index, &generated)?;
     let lists = filter::plan(index);
 
     // Proto package to what each of its files emitted, concatenated in
