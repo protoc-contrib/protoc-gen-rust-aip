@@ -95,7 +95,7 @@ jobs:
           use-gha-cache: enabled
 
       - name: Build with Nix
-        run: nix build . --system ${{ matrix.nix_system }}
+        run: nix build .#source --system ${{ matrix.nix_system }}
 
       - name: Prepare Release Assets
         run: |
@@ -132,3 +132,43 @@ jobs:
         run: nix develop --command cargo publish --package protoc-gen-rust-aip
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  # Pins the binaries just published in
+  # .github/config/nix-release-bin-manifest.json, so the flake installs them
+  # instead of building from source. The pull request is opened with the App
+  # token, as one opened with GITHUB_TOKEN starts no CI.
+  pin:
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Pin Release Binaries
+        id: pin
+        uses: nixos-contrib/nix-release-bin@main
+        with:
+          tag: ${{ needs.release.outputs.tag_name }}
+          manifest-file: .github/config/nix-release-bin-manifest.json
+
+      - name: Create Pull Request
+        if: steps.pin.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: nix/release-binaries
+          commit-message: "chore(nix): pin the ${{ steps.pin.outputs.version }} release binaries"
+          title: "chore(nix): pin the ${{ steps.pin.outputs.version }} release binaries"
+          labels: auto-merge
