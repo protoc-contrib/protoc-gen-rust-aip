@@ -167,9 +167,10 @@ says which kind in one `unwrap_or_else`.
 Only for a single-pattern resource with a UUID-typed own ID. A `string` ID has
 no minting rule the schema states, and a multi-pattern resource's create request
 does not say which pattern it is creating under, so neither gets an accessor
-rather than getting a guess. A failure is reported as the same `ParseError` an
-unparseable segment produces when reading a whole name, so a call site handles
-one error type either way.
+rather than getting a guess. A proposed nil UUID is refused too: it parses,
+but no name built from it validates. A failure is reported as the same
+`ParseError` an unparseable segment produces when reading a whole name, so a
+call site handles one error type either way.
 
 Needs no `uuid` feature beyond its defaults: the generated code only parses.
 A server needs whichever minting feature it calls — `v7` for `now_v7`.
