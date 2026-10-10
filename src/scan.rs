@@ -382,8 +382,10 @@ struct Resolved {
 ///
 /// If an annotation is malformed: a resource type without a `/`, a resource
 /// with no patterns, an unparsable pattern, a `name_field` naming a field the
-/// message does not have, or two resources claiming one type.
-pub fn gather(request: &CodeGeneratorRequest) -> Result<Registry> {
+/// message does not have, or two resources claiming one type. Or, unless
+/// `allow_unresolved_refs`, if a file scheduled for generation references a
+/// resource type the request does not declare.
+pub fn gather(request: &CodeGeneratorRequest, allow_unresolved_refs: bool) -> Result<Registry> {
     let mut registry = Registry::default();
     for file in &request.proto_file {
         walk_file(file, &mut registry)?;
@@ -393,7 +395,15 @@ pub fn gather(request: &CodeGeneratorRequest) -> Result<Registry> {
     // later in the request.
     registry.annotate_formats(&create_requests(request));
     for file in &request.proto_file {
-        collect_references(file, &mut registry);
+        // Only a file being generated is held to its references. A dependency
+        // may name a resource type it never imports -- types are strings -- and
+        // nothing is emitted for it either way.
+        let strict = !allow_unresolved_refs
+            && file
+                .name
+                .as_ref()
+                .is_some_and(|name| request.file_to_generate.contains(name));
+        collect_references(file, &mut registry, strict)?;
     }
     Ok(registry)
 }
@@ -571,36 +581,79 @@ fn build(
 /// - `child_type` names the *children* of the field's value, so the field's own
 ///   pattern is not determined by it.
 /// - `type: "*"` is deliberately unbound.
-/// - a `type` naming a resource outside the request cannot be resolved at all.
-fn collect_references(file: &FileDescriptorProto, registry: &mut Registry) {
+/// - a non-`string` or repeated field carries no single name to parse.
+///
+/// A `type` naming a resource the request does not declare is different: the
+/// schema says the field holds one, and a silent skip drops its accessor with
+/// nothing to say so. With `strict`, that fails generation, naming the field —
+/// as protoc-gen-go-aip does — unless `allow_unresolved_refs` turned it off.
+fn collect_references(
+    file: &FileDescriptorProto,
+    registry: &mut Registry,
+    strict: bool,
+) -> Result<()> {
     let source_file = file.name.clone().unwrap_or_default();
+    let package = file.package.as_deref().unwrap_or_default();
     let mut found = Vec::new();
     for message in &file.message_type {
-        collect_message_references(message, &[], registry, &mut found);
+        collect_message_references(message, &[], package, registry, strict, &mut found)?;
     }
     if !found.is_empty() {
         registry.references.insert(source_file, found);
     }
+    Ok(())
 }
 
 fn collect_message_references(
     message: &DescriptorProto,
     parents: &[&str],
+    package: &str,
     registry: &Registry,
+    strict: bool,
     found: &mut Vec<Reference>,
-) {
+) -> Result<()> {
     let name = message.name.as_deref().unwrap_or_default();
     for field in &message.field {
-        if let Some(reference) = resolve_reference(field, parents, name, registry) {
-            found.push(reference);
+        match resolve_reference(field, parents, name, registry) {
+            Resolution::Resolved(reference) => found.push(reference),
+            Resolution::Unknown(resource_type) if strict => {
+                let message = parents
+                    .iter()
+                    .copied()
+                    .chain([name])
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let field = field.name.as_deref().unwrap_or_default();
+                let prefix = if package.is_empty() {
+                    String::new()
+                } else {
+                    format!("{package}.")
+                };
+                bail!(
+                    "{prefix}{message}.{field}: reference to unknown type {resource_type:?} \
+                     (set allow_unresolved_refs=true to skip)"
+                );
+            }
+            Resolution::Skipped | Resolution::Unknown(_) => {}
         }
     }
 
     let mut nested_parents = parents.to_vec();
     nested_parents.push(name);
     for nested in &message.nested_type {
-        collect_message_references(nested, &nested_parents, registry, found);
+        collect_message_references(nested, &nested_parents, package, registry, strict, found)?;
     }
+    Ok(())
+}
+
+/// What a field's `google.api.resource_reference` comes to.
+enum Resolution {
+    /// A reference to a resource the request declares.
+    Resolved(Reference),
+    /// No reference, or one this generator has nothing to emit for.
+    Skipped,
+    /// A reference to this resource type, which the request does not declare.
+    Unknown(String),
 }
 
 fn resolve_reference(
@@ -608,24 +661,32 @@ fn resolve_reference(
     parents: &[&str],
     message_name: &str,
     registry: &Registry,
-) -> Option<Reference> {
-    let reference = field
+) -> Resolution {
+    let Some(reference) = field
         .options
         .as_option()
-        .and_then(|options: &FieldOptions| options.extension(&RESOURCE_REFERENCE))?;
+        .and_then(|options: &FieldOptions| options.extension(&RESOURCE_REFERENCE))
+    else {
+        return Resolution::Skipped;
+    };
     if reference.r#type.is_empty() || reference.r#type == WILDCARD_TYPE {
-        return None;
+        return Resolution::Skipped;
     }
     // A `repeated string` of names, or a non-string field, carries no single
     // name to parse. Skipped for the same reason as `child_type`: the
     // annotation is legal, this generator just has nothing to emit for it.
     if !is_string(field) {
-        return None;
+        return Resolution::Skipped;
     }
-    let resource = registry.by_type.get(&reference.r#type).copied()?;
-    Some(Reference {
+    let Some(resource) = registry.by_type.get(&reference.r#type).copied() else {
+        return Resolution::Unknown(reference.r#type.clone());
+    };
+    let Some(field_name) = field.name.clone() else {
+        return Resolution::Skipped;
+    };
+    Resolution::Resolved(Reference {
         rust_path: rust_path(parents, message_name),
-        field_name: field.name.clone()?,
+        field_name,
         field_optional: field.proto3_optional.unwrap_or(false),
         resource,
     })
@@ -755,6 +816,76 @@ mod tests {
                 .unwrap();
         }
         registry
+    }
+
+    /// A request whose `ref.proto` declares `test.v1.Outer.Inner` with a
+    /// `bar` field referencing `example.com/Missing`, which nothing declares.
+    fn unresolved_request(generate: bool) -> CodeGeneratorRequest {
+        use crate::annotations::google::api::ResourceReference;
+
+        let mut options = FieldOptions::default();
+        options.set_extension(
+            &RESOURCE_REFERENCE,
+            ResourceReference {
+                r#type: "example.com/Missing".to_owned(),
+                ..Default::default()
+            },
+        );
+        let field = FieldDescriptorProto {
+            name: Some("bar".to_owned()),
+            number: Some(1),
+            r#type: Some(field_descriptor_proto::Type::TYPE_STRING),
+            label: Some(field_descriptor_proto::Label::LABEL_OPTIONAL),
+            options: options.into(),
+            ..Default::default()
+        };
+        let inner = DescriptorProto {
+            name: Some("Inner".to_owned()),
+            field: vec![field],
+            ..Default::default()
+        };
+        let outer = DescriptorProto {
+            name: Some("Outer".to_owned()),
+            nested_type: vec![inner],
+            ..Default::default()
+        };
+        CodeGeneratorRequest {
+            file_to_generate: if generate {
+                vec!["ref.proto".to_owned()]
+            } else {
+                Vec::new()
+            },
+            proto_file: vec![FileDescriptorProto {
+                name: Some("ref.proto".to_owned()),
+                package: Some("test.v1".to_owned()),
+                message_type: vec![outer],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_reference_to_an_unknown_type_fails_naming_the_field() {
+        let error = gather(&unresolved_request(true), false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            r#"test.v1.Outer.Inner.bar: reference to unknown type "example.com/Missing" (set allow_unresolved_refs=true to skip)"#
+        );
+    }
+
+    #[test]
+    fn allow_unresolved_refs_skips_it() {
+        let registry = gather(&unresolved_request(true), true).unwrap();
+        assert!(registry.references.is_empty());
+    }
+
+    #[test]
+    fn a_dependency_is_not_held_to_its_references() {
+        // Nothing is generated for a file only imported, and it may name a
+        // resource type it never imports.
+        let registry = gather(&unresolved_request(false), false).unwrap();
+        assert!(registry.references.is_empty());
     }
 
     fn create_request(

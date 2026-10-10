@@ -75,6 +75,16 @@ pub struct Options {
     /// Only the read-only accessors are doubled. `clear_output_only` takes
     /// `&mut self`, and a view does not own what it would clear.
     pub views: bool,
+
+    /// Whether a `google.api.resource_reference` to a resource type the
+    /// request does not declare is skipped, rather than failing generation.
+    ///
+    /// Off by default, as in protoc-gen-go-aip: the schema says the field holds
+    /// that resource's name, and skipping it drops the field's accessor with
+    /// nothing to say so. Turn it on when the referent's `.proto` is
+    /// deliberately not part of the compilation — a resource owned by another
+    /// API. Read by [`scan::gather`](crate::scan::gather), not the emitter.
+    pub allow_unresolved_refs: bool,
 }
 
 impl Default for Options {
@@ -83,6 +93,7 @@ impl Default for Options {
             proto_module: "crate::proto".to_owned(),
             packaging: true,
             views: false,
+            allow_unresolved_refs: false,
         }
     }
 }
