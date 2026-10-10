@@ -23,6 +23,7 @@ use crate::annotations::google::api::{
     FIELD_INFO, RESOURCE, RESOURCE_DEFINITION, RESOURCE_REFERENCE, ResourceDescriptor, field_info,
 };
 use crate::idents::snake_case;
+use crate::presence::Scope;
 
 /// The AIP-159 wildcard, which `google.api.resource_reference` uses to mean
 /// "any resource type". A reference that names it is not bound to a pattern, so
@@ -471,8 +472,9 @@ fn walk_file(file: &FileDescriptorProto, registry: &mut Registry) -> Result<()> 
         registry.insert(resource)?;
     }
 
+    let scope = Scope::file(file);
     for message in &file.message_type {
-        walk_message(message, &[], &source_file, &package, registry)?;
+        walk_message(message, &[], &source_file, &package, scope, registry)?;
     }
     Ok(())
 }
@@ -482,9 +484,11 @@ fn walk_message(
     parents: &[&str],
     source_file: &str,
     package: &str,
+    scope: Scope,
     registry: &mut Registry,
 ) -> Result<()> {
     let name = message.name.as_deref().unwrap_or_default();
+    let scope = scope.message(message);
     if let Some(descriptor) = message
         .options
         .as_option()
@@ -515,7 +519,7 @@ fn walk_message(
         let binding = MessageBinding {
             rust_path: rust_path(parents, name),
             name_field: name_field.to_owned(),
-            name_field_optional: field.proto3_optional.unwrap_or(false),
+            name_field_optional: scope.is_option(field),
         };
         let resource = build(&descriptor, source_file, package, Some(binding))?;
         registry.insert(resource)?;
@@ -524,7 +528,14 @@ fn walk_message(
     let mut nested_parents = parents.to_vec();
     nested_parents.push(name);
     for nested in &message.nested_type {
-        walk_message(nested, &nested_parents, source_file, package, registry)?;
+        walk_message(
+            nested,
+            &nested_parents,
+            source_file,
+            package,
+            scope,
+            registry,
+        )?;
     }
     Ok(())
 }
@@ -594,9 +605,10 @@ fn collect_references(
 ) -> Result<()> {
     let source_file = file.name.clone().unwrap_or_default();
     let package = file.package.as_deref().unwrap_or_default();
+    let scope = Scope::file(file);
     let mut found = Vec::new();
     for message in &file.message_type {
-        collect_message_references(message, &[], package, registry, strict, &mut found)?;
+        collect_message_references(message, &[], package, scope, registry, strict, &mut found)?;
     }
     if !found.is_empty() {
         registry.references.insert(source_file, found);
@@ -608,13 +620,15 @@ fn collect_message_references(
     message: &DescriptorProto,
     parents: &[&str],
     package: &str,
+    scope: Scope,
     registry: &Registry,
     strict: bool,
     found: &mut Vec<Reference>,
 ) -> Result<()> {
     let name = message.name.as_deref().unwrap_or_default();
+    let scope = scope.message(message);
     for field in &message.field {
-        match resolve_reference(field, parents, name, registry) {
+        match resolve_reference(field, parents, name, scope, registry) {
             Resolution::Resolved(reference) => found.push(reference),
             Resolution::Unknown(resource_type) if strict => {
                 let message = parents
@@ -641,7 +655,15 @@ fn collect_message_references(
     let mut nested_parents = parents.to_vec();
     nested_parents.push(name);
     for nested in &message.nested_type {
-        collect_message_references(nested, &nested_parents, package, registry, strict, found)?;
+        collect_message_references(
+            nested,
+            &nested_parents,
+            package,
+            scope,
+            registry,
+            strict,
+            found,
+        )?;
     }
     Ok(())
 }
@@ -660,6 +682,7 @@ fn resolve_reference(
     field: &FieldDescriptorProto,
     parents: &[&str],
     message_name: &str,
+    scope: Scope,
     registry: &Registry,
 ) -> Resolution {
     let Some(reference) = field
@@ -687,7 +710,7 @@ fn resolve_reference(
     Resolution::Resolved(Reference {
         rust_path: rust_path(parents, message_name),
         field_name,
-        field_optional: field.proto3_optional.unwrap_or(false),
+        field_optional: scope.is_option(field),
         resource,
     })
 }

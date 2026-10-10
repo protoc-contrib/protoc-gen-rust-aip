@@ -154,6 +154,16 @@ fn emit_request(list: &ListRequest, index: &Index) -> Option<TokenStream> {
         .parse()
         .expect("a message path built from proto identifiers is a valid Rust path");
     let env = Ident::new(&env_name(&request.fqn, &request.package), Span::call_site());
+    // An editions or proto2 `filter` is an `Option<String>`; unset is blank.
+    let optional = request
+        .fields
+        .iter()
+        .any(|field| field.name == "filter" && field.optional);
+    let filter = if optional {
+        quote! { self.filter.as_deref().unwrap_or_default() }
+    } else {
+        quote! { &self.filter }
+    };
     let struct_name = Literal::string(resource.fqn.trim_start_matches('.'));
 
     let fields: Vec<TokenStream> = resource
@@ -215,10 +225,11 @@ fn emit_request(list: &ListRequest, index: &Index) -> Option<TokenStream> {
                 &self,
             ) -> ::core::result::Result<::core::option::Option<::cel::Program>, ::cel::ParseErrors>
             {
-                if self.filter.trim().is_empty() {
+                let filter: &str = #filter;
+                if filter.trim().is_empty() {
                     return ::core::result::Result::Ok(::core::option::Option::None);
                 }
-                #env.compile(&self.filter).map(::core::option::Option::Some)
+                #env.compile(filter).map(::core::option::Option::Some)
             }
         }
     })

@@ -978,6 +978,13 @@ fn emit_create_id(
         .expect("a message path built from proto identifiers is a valid Rust path");
     let ident = buffa_codegen::idents::make_field_ident(&field.name);
     let method = format_ident!("parse_{}", field.name);
+    // An editions or proto2 field is an `Option<String>`; read as `""` when
+    // unset, which AIP-133 reads as "the server assigns one" either way.
+    let value = if field.optional {
+        quote! { self.#ident.as_deref().unwrap_or_default() }
+    } else {
+        quote! { &self.#ident }
+    };
     let name_type = format_ident!("{}", resource.name_type());
     let variable = Literal::string(&segment.name);
 
@@ -1020,14 +1027,15 @@ fn emit_create_id(
                 ::core::option::Option<::uuid::Uuid>,
                 ::aip::resource::ParseError,
             > {
-                if self.#ident.is_empty() {
+                let id: &str = #value;
+                if id.is_empty() {
                     return ::core::result::Result::Ok(::core::option::Option::None);
                 }
-                match <::uuid::Uuid as ::core::str::FromStr>::from_str(&self.#ident) {
+                match <::uuid::Uuid as ::core::str::FromStr>::from_str(id) {
                     // The nil UUID parses, but no name built from it validates.
                     ::core::result::Result::Ok(value) if value.is_nil() => {
                         ::core::result::Result::Err(#name_type::compiled().invalid_value(
-                            &self.#ident,
+                            id,
                             #variable,
                             "the nil UUID is not an ID",
                         ))
@@ -1036,7 +1044,7 @@ fn emit_create_id(
                         ::core::result::Result::Ok(::core::option::Option::Some(value))
                     }
                     ::core::result::Result::Err(error) => ::core::result::Result::Err(
-                        #name_type::compiled().invalid_value(&self.#ident, #variable, error),
+                        #name_type::compiled().invalid_value(id, #variable, error),
                     ),
                 }
             }

@@ -1,0 +1,45 @@
+// Fixture for an editions file. Edition 2023 defaults every singular scalar to
+// explicit presence, which buffa generates as `Option<T>` -- so every accessor
+// this plugin emits has to read an `Option<String>` where a proto3 file has a
+// bare `String`: the resource name, a reference, the AIP-133 create ID, the
+// List filter, and each field `implied_update_mask` tests.
+edition = "2023";
+
+package example.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+
+message Gadget {
+  option (google.api.resource) = {
+    type: "example.com/Gadget"
+    pattern: "gadgets/{gadget}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // Explicit presence, the edition default: `Option<String>`, `Option<i32>`.
+  string label = 2;
+  int32 count = 3;
+  // Implicit presence, opted into per field: a bare `String`.
+  string mode = 4 [features.field_presence = IMPLICIT];
+  string serial = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string owner = 6 [(google.api.resource_reference) = { type: "example.com/Publisher" }];
+}
+
+message CreateGadgetRequest {
+  string gadget_id = 1 [(google.api.field_info).format = UUID4];
+  Gadget gadget = 2;
+}
+
+message ListGadgetsRequest {
+  string filter = 1;
+}
+
+message ListGadgetsResponse {
+  repeated Gadget gadgets = 1;
+}
+
+service Gadgets {
+  rpc ListGadgets(ListGadgetsRequest) returns (ListGadgetsResponse);
+}

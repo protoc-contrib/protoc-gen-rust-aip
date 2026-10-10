@@ -23,6 +23,7 @@ const SCHEMA: &[&str] = &[
     "example/v1/uuid.proto",
     "example/v1/behavior.proto",
     "example/v1/filter.proto",
+    "example/v1/editions.proto",
     "other/v1/catalog.proto",
 ];
 

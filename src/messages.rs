@@ -19,6 +19,7 @@ use buffa_codegen::generated::{
 
 use crate::annotations::google::api::{FIELD_BEHAVIOR, FieldBehavior};
 use crate::idents::module;
+use crate::presence::Scope;
 
 /// What a field holds, to the resolution these passes care about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,8 +63,10 @@ pub struct Field {
     /// Whether the field is `repeated`. A map field is repeated too — see
     /// [`Field::map_value`].
     pub repeated: bool,
-    /// Whether the field has explicit presence and so is an `Option<T>`.
-    pub proto3_optional: bool,
+    /// Whether buffa generates the field as an `Option<T>`: proto3 `optional`,
+    /// proto2 `optional`, or editions explicit presence. See
+    /// [`presence`](crate::presence).
+    pub optional: bool,
     /// The name of the real `oneof` this field belongs to, if any. A proto3
     /// `optional` field sits in a synthetic oneof, which is not one of these.
     pub oneof: Option<String>,
@@ -156,8 +159,9 @@ pub fn gather(request: &CodeGeneratorRequest) -> Index {
 fn walk_file(file: &FileDescriptorProto, index: &mut Index) {
     let package = file.package.clone().unwrap_or_default();
     let source_file = file.name.clone().unwrap_or_default();
+    let scope = Scope::file(file);
     for message in &file.message_type {
-        walk_message(message, &[], &package, &source_file, index);
+        walk_message(message, &[], &package, &source_file, scope, index);
     }
     for service in &file.service {
         for method in &service.method {
@@ -176,9 +180,11 @@ fn walk_message(
     parents: &[&str],
     package: &str,
     source_file: &str,
+    scope: Scope,
     index: &mut Index,
 ) {
     let name = message.name.as_deref().unwrap_or_default();
+    let scope = scope.message(message);
     let mut fqn = String::from(".");
     if !package.is_empty() {
         fqn.push_str(package);
@@ -199,7 +205,7 @@ fn walk_message(
     let fields = message
         .field
         .iter()
-        .map(|field| build_field(field, &oneofs))
+        .map(|field| build_field(field, &oneofs, scope))
         .collect();
 
     let is_map_entry = message
@@ -224,11 +230,11 @@ fn walk_message(
     let mut nested = parents.to_vec();
     nested.push(name);
     for child in &message.nested_type {
-        walk_message(child, &nested, package, source_file, index);
+        walk_message(child, &nested, package, source_file, scope, index);
     }
 }
 
-fn build_field(field: &FieldDescriptorProto, oneofs: &[&str]) -> Field {
+fn build_field(field: &FieldDescriptorProto, oneofs: &[&str], scope: Scope) -> Field {
     use field_descriptor_proto::{Label, Type};
 
     let kind = match field.r#type {
@@ -243,11 +249,10 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str]) -> Field {
         _ => Kind::Integer,
     };
 
-    let proto3_optional = field.proto3_optional.unwrap_or(false);
     // A proto3 `optional` field is placed in a synthetic one-member oneof.
     // Reporting it as a oneof would make generated code match on an enum buffa
     // does not emit for it.
-    let oneof = if proto3_optional {
+    let oneof = if field.proto3_optional.unwrap_or(false) {
         None
     } else {
         field
@@ -263,7 +268,7 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str]) -> Field {
         kind,
         type_name: field.type_name.clone().unwrap_or_default(),
         repeated: field.label == Some(Label::LABEL_REPEATED),
-        proto3_optional,
+        optional: scope.is_option(field),
         oneof,
         output_only: has_behavior(field, FieldBehavior::OUTPUT_ONLY),
         identifier: has_behavior(field, FieldBehavior::IDENTIFIER),

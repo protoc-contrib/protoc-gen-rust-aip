@@ -173,7 +173,7 @@ fn populated(message: &Message, field: &Field) -> TokenStream {
     if field.repeated || field.is_map {
         return quote! { !self.#ident.is_empty() };
     }
-    if field.proto3_optional {
+    if field.optional {
         return quote! { self.#ident.is_some() };
     }
     match field.kind {

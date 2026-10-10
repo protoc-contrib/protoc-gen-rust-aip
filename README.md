@@ -155,6 +155,16 @@ zero value; a repeated field or map when not empty. It is emitted on the owned
 message only, not on views: implying a mask means writing it, and a view is
 read-only.
 
+Two things follow from presence, and both are worth knowing at the call site:
+
+- **Clear, then imply.** A populated message field is implied as one path —
+  `carrier`, not `carrier.name` — so the update writes everything beneath it,
+  nested `OUTPUT_ONLY` values included. Call `clear_output_only()` on the
+  inbound resource first.
+- **A zero value is never implied.** `false`, `0` and `""` on a field without
+  explicit presence are indistinguishable from unset, so a client clears one
+  with an explicit mask — or the schema makes the field `optional`.
+
 Deriving both from the schema is the point — a new writable field joins them
 without anyone remembering to.
 
