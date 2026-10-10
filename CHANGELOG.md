@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.2.0...v0.2.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* read proto2 and editions explicit presence as buffa does ([#26](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/26)) ([40d0f4b](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/40d0f4b1aba1f71801151f2e0bba190c8086649a))
+* resolve resources per package, and close the review's other gaps ([#28](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/28)) ([6c66574](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/6c66574b616d6f94b84eea432be6dc2ba0fcf01f))
+
 ## [0.2.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.1.0...v0.2.0) (2026-10-10)
 
 
