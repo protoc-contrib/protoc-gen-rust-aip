@@ -486,6 +486,12 @@ imports, and nothing is emitted for it either way. References this plugin has
 nothing to emit for are skipped regardless — `child_type`, `type: "*"`, and a
 field that is not a singular `string`.
 
+A reference whose accessor would collide with the resource name's own fails
+generation regardless of the option: on a resource message, a reference on the
+`name` field itself, or on a field named `full_name`, would emit a second
+`parse_name` or `parse_full_name`. protoc-gen-go-aip refuses the equivalent
+`ParseName`/`ParseFullName` collision.
+
 **Versions of one API.** `v1` and `v2` may each declare `example.com/Book`. A
 reference, a parent and a create request's ID format all bind to the
 declaration in the referring package; from another package, to the only

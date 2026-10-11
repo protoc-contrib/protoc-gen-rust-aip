@@ -468,12 +468,15 @@ pub fn gather(request: &CodeGeneratorRequest, allow_unresolved_refs: bool) -> Re
         // Only a file being generated is held to its references. A dependency
         // may name a resource type it never imports -- types are strings -- and
         // nothing is emitted for it either way.
-        let strict = !allow_unresolved_refs
-            && file
-                .name
-                .as_ref()
-                .is_some_and(|name| request.file_to_generate.contains(name));
-        collect_references(file, &mut registry, strict)?;
+        let generated = file
+            .name
+            .as_ref()
+            .is_some_and(|name| request.file_to_generate.contains(name));
+        let held = Held {
+            resolved: generated && !allow_unresolved_refs,
+            distinct: generated,
+        };
+        collect_references(file, &mut registry, held)?;
     }
     Ok(registry)
 }
@@ -674,19 +677,20 @@ fn build(
 ///
 /// A `type` naming a resource the request does not declare is different: the
 /// schema says the field holds one, and a silent skip drops its accessor with
-/// nothing to say so. With `strict`, that fails generation, naming the field —
-/// as protoc-gen-go-aip does — unless `allow_unresolved_refs` turned it off.
+/// nothing to say so. With [`Held::resolved`], that fails generation, naming
+/// the field — as protoc-gen-go-aip does — unless `allow_unresolved_refs`
+/// turned it off.
 fn collect_references(
     file: &FileDescriptorProto,
     registry: &mut Registry,
-    strict: bool,
+    held: Held,
 ) -> Result<()> {
     let source_file = file.name.clone().unwrap_or_default();
     let package = file.package.as_deref().unwrap_or_default();
     let scope = Scope::file(file);
     let mut found = Vec::new();
     for message in &file.message_type {
-        collect_message_references(message, &[], package, scope, registry, strict, &mut found)?;
+        collect_message_references(message, &[], package, scope, registry, held, &mut found)?;
     }
     if !found.is_empty() {
         registry.references.insert(source_file, found);
@@ -700,15 +704,31 @@ fn collect_message_references(
     package: &str,
     scope: Scope,
     registry: &Registry,
-    strict: bool,
+    held: Held,
     found: &mut Vec<Reference>,
 ) -> Result<()> {
     let name = message.name.as_deref().unwrap_or_default();
     let scope = scope.message(message);
+    let is_resource = message
+        .options
+        .as_option()
+        .and_then(|options: &MessageOptions| options.extension(&RESOURCE))
+        .is_some();
     for field in &message.field {
         match resolve_reference(field, parents, name, package, scope, registry) {
-            Resolution::Resolved(reference) => found.push(reference),
-            Resolution::Ambiguous(resource_type, packages) if strict => {
+            Resolution::Resolved(reference) => {
+                let accessor = format!("parse_{}", reference.field_name);
+                if held.distinct && is_resource && NAME_ACCESSORS.contains(&accessor.as_str()) {
+                    bail!(
+                        "{}.{}: its resource_reference would emit {accessor}, which the \
+                         message's own resource name already emits",
+                        qualified(package, parents, name),
+                        reference.field_name,
+                    );
+                }
+                found.push(reference);
+            }
+            Resolution::Ambiguous(resource_type, packages) if held.resolved => {
                 let field = field.name.as_deref().unwrap_or_default();
                 bail!(
                     "{}.{field}: reference to type {resource_type:?} is ambiguous: it is \
@@ -718,7 +738,7 @@ fn collect_message_references(
                     packages.join(", "),
                 );
             }
-            Resolution::Unknown(resource_type) if strict => {
+            Resolution::Unknown(resource_type) if held.resolved => {
                 let field = field.name.as_deref().unwrap_or_default();
                 bail!(
                     "{}.{field}: reference to unknown type {resource_type:?} \
@@ -739,12 +759,31 @@ fn collect_message_references(
             package,
             scope,
             registry,
-            strict,
+            held,
             found,
         )?;
     }
     Ok(())
 }
+
+/// What the references of one file are held to.
+///
+/// Only a file being generated is held to anything: nothing is emitted for a
+/// dependency, so nothing about its references can fail.
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    /// A reference to a type the request does not declare, or declares only in
+    /// several other packages, fails generation rather than being skipped.
+    resolved: bool,
+    /// A reference whose accessor would collide with one the resource name
+    /// emits on the same message fails generation, rather than surfacing as a
+    /// duplicate-definition error in the consumer's build.
+    distinct: bool,
+}
+
+/// The accessors a resource's own name emits on its message, whatever its
+/// `name_field` -- see `emit::resource::emit_message_accessors`.
+const NAME_ACCESSORS: [&str; 2] = ["parse_name", "parse_full_name"];
 
 /// A message's fully-qualified proto name, without the leading dot.
 fn qualified(package: &str, parents: &[&str], name: &str) -> String {
@@ -1046,6 +1085,70 @@ mod tests {
             ..Default::default()
         });
         file
+    }
+
+    /// `declaring(package)` with Thing's `field` referencing
+    /// `example.com/Thing` -- the `name` field itself, or a new one.
+    fn self_referencing(package: &str, field: &str) -> FileDescriptorProto {
+        use crate::annotations::google::api::ResourceReference;
+
+        let mut options = FieldOptions::default();
+        options.set_extension(
+            &RESOURCE_REFERENCE,
+            ResourceReference {
+                r#type: "example.com/Thing".to_owned(),
+                ..Default::default()
+            },
+        );
+        let mut file = declaring(package);
+        let thing = &mut file.message_type[0];
+        if field == "name" {
+            thing.field[0].options = options.into();
+        } else {
+            thing.field.push(FieldDescriptorProto {
+                name: Some(field.to_owned()),
+                number: Some(2),
+                r#type: Some(field_descriptor_proto::Type::TYPE_STRING),
+                label: Some(field_descriptor_proto::Label::LABEL_OPTIONAL),
+                options: options.into(),
+                ..Default::default()
+            });
+        }
+        file
+    }
+
+    #[test]
+    fn a_reference_colliding_with_the_name_accessors_fails() {
+        for field in ["name", "full_name"] {
+            let error = gather(&generating(vec![self_referencing("a.v1", field)]), false)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "a.v1.Thing.{field}: its resource_reference would emit parse_{field}, \
+                     which the message's own resource name already emits"
+                ),
+            );
+            // Not a resolution failure, so allow_unresolved_refs does not skip it.
+            assert!(gather(&generating(vec![self_referencing("a.v1", field)]), true).is_err());
+        }
+    }
+
+    #[test]
+    fn a_reference_beside_the_name_accessors_is_fine() {
+        let registry = gather(&generating(vec![self_referencing("a.v1", "twin")]), false).unwrap();
+        assert_eq!(registry.references["a.v1.proto"][0].field_name, "twin");
+    }
+
+    #[test]
+    fn a_dependency_is_not_held_to_accessor_collisions() {
+        // Nothing is emitted for a file only imported, so nothing collides.
+        let request = CodeGeneratorRequest {
+            proto_file: vec![self_referencing("a.v1", "name")],
+            ..Default::default()
+        };
+        assert!(gather(&request, false).is_ok());
     }
 
     fn generating(files: Vec<FileDescriptorProto>) -> CodeGeneratorRequest {
