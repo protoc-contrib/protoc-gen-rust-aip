@@ -11,10 +11,11 @@ repository = "https://github.com/protoc-contrib/protoc-gen-rust-aip"
 homepage = "https://github.com/protoc-contrib/protoc-gen-rust-aip"
 keywords = ["aip", "protobuf", "buffa", "grpc", "codegen"]
 categories = ["development-tools"]
-# What `cargo install` builds from: the plugin, its build script and the
-# annotation protos that script compiles. The fixture, its test schema, CI and
-# Nix are this repository's, not the crate's.
-include = ["src/**", "build.rs", "proto/**", "README.md", "LICENSE", "CHANGELOG.md"]
+# What `cargo install` builds from: the plugin, with the google/api annotation
+# types generated and committed under src/generated, so it needs no protoc. The
+# vendored protos, the fixture, its test schema, CI and Nix are this
+# repository's, not the crate's.
+include = ["src/**", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [[bin]]
 name = "protoc-gen-rust-aip"
@@ -45,5 +46,6 @@ anyhow = "1"
 # runtime rejects fails `buf generate` instead of panicking in a consumer.
 aip = { package = "aip-rs", version = "0.1" }
 
-[build-dependencies]
+[dev-dependencies]
+# Regenerates src/generated, to check it is current; see tests/generated.rs.
 buffa-build = "0.9.2"
