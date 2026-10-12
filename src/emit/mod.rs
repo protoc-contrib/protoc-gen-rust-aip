@@ -10,6 +10,7 @@
 pub mod behavior;
 pub mod field_mask;
 pub mod filter;
+pub mod request;
 pub mod resource;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -142,6 +143,10 @@ pub fn render(
 
         let resources = resource::emit_file(name, &package, registry, options.views);
         let creates = resource::emit_create_ids(name, index, registry, options.views);
+        let mut items = field_mask::emit_file(name, index, registry)?;
+        for (fqn, request_items) in request::emit_file(name, index, registry, &generated)? {
+            items.entry(fqn).or_default().extend(request_items);
+        }
         let behaviors = field_behavior_impls(
             name,
             index,
@@ -149,7 +154,7 @@ pub fn render(
                 behavior::emit_file(name, index, &outputs, &generated),
                 behavior::emit_file(name, index, &inputs, &generated),
             ],
-            field_mask::emit_file(name, index, registry)?,
+            items,
         );
         let filters = filter::emit_file(name, index, &lists);
         if resources.is_empty() && creates.is_empty() && behaviors.is_empty() && filters.is_empty()
@@ -193,10 +198,14 @@ pub fn render(
 
 /// One `impl ::aip::FieldBehavior` per message declared in `file` that any
 /// pass emitted an item for, in declaration order: the clearing walks a
-/// message needs and, on a resource, the update-mask and check items. A type
-/// implements a trait once, so the passes' items are gathered here rather than
-/// each emitting its own impl. Every item left out is the trait's "nothing to
-/// do" default.
+/// message needs, on a resource the update-mask and check items, and on a
+/// create, update or batch request the request-level ones. A type implements a
+/// trait once, so the passes' items are gathered here rather than each
+/// emitting its own impl. Every item left out is the trait's "nothing to do"
+/// default.
+///
+/// Every resource gets an impl, an empty one if nothing differs from the
+/// defaults, because a request's items call it whatever it holds.
 fn field_behavior_impls(
     file: &str,
     index: &Index,
@@ -209,8 +218,10 @@ fn field_behavior_impls(
             .iter()
             .filter_map(|walk| walk.get(&message.fqn).cloned())
             .collect();
-        items.extend(resources.remove(&message.fqn).unwrap_or_default());
-        if items.is_empty() {
+        let declared = resources.remove(&message.fqn);
+        let resource = declared.is_some();
+        items.extend(declared.unwrap_or_default());
+        if items.is_empty() && !resource {
             return None;
         }
         let path: TokenStream = message

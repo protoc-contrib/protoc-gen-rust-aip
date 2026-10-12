@@ -10,6 +10,7 @@ package example.v1;
 
 import "google/api/field_behavior.proto";
 import "google/api/resource.proto";
+import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
 message Shipment {
@@ -168,4 +169,43 @@ message Voucher {
 message Node {
   string label = 1 [(google.api.field_behavior) = REQUIRED];
   Node child = 2;
+}
+
+// AIP standard method requests for `missing_required_request_paths` and
+// `imply_update_mask`, generated on a service's create, update and batch
+// requests -- and on the entries of a batch -- and on nothing else.
+service Orders {
+  rpc CreateOrder(CreateOrderRequest) returns (Order);
+  rpc UpdateOrder(UpdateOrderRequest) returns (Order);
+  rpc BatchCreateOrders(BatchCreateOrdersRequest) returns (BatchOrdersResponse);
+  rpc BatchUpdateOrders(BatchUpdateOrdersRequest) returns (BatchOrdersResponse);
+}
+
+// A create: a resource field and no update_mask.
+message CreateOrderRequest {
+  string parent = 1;
+  Order order = 2;
+}
+
+// An update: a resource field and an update_mask.
+message UpdateOrderRequest {
+  Order order = 1;
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+message BatchCreateOrdersRequest {
+  repeated CreateOrderRequest requests = 1;
+}
+
+message BatchUpdateOrdersRequest {
+  repeated UpdateOrderRequest requests = 1;
+}
+
+message BatchOrdersResponse {
+  repeated Order orders = 1;
+}
+
+// Holds a resource but is no method's request: it gets no request-level items.
+message OrderEnvelope {
+  Order order = 1;
 }

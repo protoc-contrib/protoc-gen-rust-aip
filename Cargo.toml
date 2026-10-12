@@ -44,11 +44,7 @@ anyhow = "1"
 # The runtime the generated code calls into, used here for one thing: compiling
 # each pattern the way the generated code will at startup, so a pattern the
 # runtime rejects fails `buf generate` instead of panicking in a consumer.
-# The git source is temporary, for the `FieldBehavior` trait (on aip-rs main,
-# not yet released) the fixture's generated code implements: it keeps the
-# workspace on one aip-rs. Publishing drops it and uses the version, which has
-# everything the plugin itself calls. Back to the version alone once released.
-aip = { package = "aip-rs", version = "0.1", git = "https://github.com/protoc-contrib/aip-rs", rev = "6dc7a18d0414305936ce1eb7747fe64e37827b73" }
+aip = { package = "aip-rs", version = "0.3" }
 
 [dev-dependencies]
 # Regenerates src/generated, to check it is current; see tests/generated.rs.
