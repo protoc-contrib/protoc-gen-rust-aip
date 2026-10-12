@@ -19,8 +19,8 @@ dependencies = [
 
 [[package]]
 name = "aip-rs"
-version = "0.1.0"
-source = "git+https://github.com/protoc-contrib/aip-rs?rev=6dc7a18d0414305936ce1eb7747fe64e37827b73#6dc7a18d0414305936ce1eb7747fe64e37827b73"
+version = "0.2.0"
+source = "git+https://github.com/protoc-contrib/aip-rs?rev=13e1abf3d7c60a2c0ca5d19a53b5c95ee556eb80#13e1abf3d7c60a2c0ca5d19a53b5c95ee556eb80"
 
 [[package]]
 name = "android_system_properties"
