@@ -39,16 +39,7 @@
           src = pkgs.lib.cleanSource ./.;
           doCheck = false;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            # aip-rs comes from git until the release carrying validate_* and
-            # imply_* is out, and Cargo.lock records a git source without a
-            # hash; Nix needs one to fetch it in the sandbox. Drop this, and
-            # the git source in both Cargo.toml files, once it is released.
-            outputHashes = {
-              "aip-rs-0.3.0" = "sha256-sGKH01DGqhpZ6ls1DFZc9mcCkwd/JcQ2ynBw6uRQoz8=";
-            };
-          };
+          cargoLock.lockFile = ./Cargo.lock;
 
           # Only the plugin. The other workspace member is the fixture, which
           # exists to regenerate and type-check the test schema and has no place

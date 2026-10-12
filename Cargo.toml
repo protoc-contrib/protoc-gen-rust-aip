@@ -44,7 +44,7 @@ anyhow = "1"
 # The runtime the generated code calls into, used here for one thing: compiling
 # each pattern the way the generated code will at startup, so a pattern the
 # runtime rejects fails `buf generate` instead of panicking in a consumer.
-aip = { package = "aip-rs", version = "0.3", git = "https://github.com/protoc-contrib/aip-rs", rev = "12176019a99dbe42acb4ab73cb6ef39df82b188d" }
+aip = { package = "aip-rs", version = "0.4" }
 
 [dev-dependencies]
 # Regenerates src/generated, to check it is current; see tests/generated.rs.
