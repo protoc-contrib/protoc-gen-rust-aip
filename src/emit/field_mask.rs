@@ -244,9 +244,13 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<TokenS
          [`implied_update_mask`](Self::implied_update_mask) reads it: a \
          `REQUIRED` `bool` without explicit presence must be `true`. A set \
          singular message is descended into, its own `REQUIRED` fields \
-         reported as dotted paths (`address.city`); an unset one is not, nor \
-         are repeated and map fields. A message type that contains itself is \
-         descended into once per path.\n\n\
+         reported as dotted paths (`address.city`). An unset one is not on a \
+         create, or when the mask names it whole -- its own `REQUIRED` is \
+         reported at its level -- but a nested path is checked even when its \
+         parent is unset, reading the parent as empty: the update writes that \
+         path, so it would clear it. Repeated and map fields are never \
+         descended into. A message type that contains itself is descended into \
+         once per path.\n\n\
          ```text\n\
          let missing = item.missing_required_paths(None); // create\n\
          let missing = item.missing_required_paths(Some(&update_mask.paths)); // update\n\
@@ -300,6 +304,10 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<TokenS
         #[allow(
             clippy::collapsible_if,
             reason = "collapsing a test and a binding takes a let chain, which needs edition 2024"
+        )]
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one statement per REQUIRED path, spelled out at generation time"
         )]
         pub fn missing_required_paths(
             &self,
@@ -380,6 +388,22 @@ fn required_checks(
         check_oneof_reachable(package, message, field)?;
         let ident = buffa_codegen::idents::make_field_ident(&field.name);
         let statements = inner.statements;
+        // Unset, the message is read as empty when the mask names only paths
+        // beneath it: the update writes those, so it would clear them. Named
+        // whole -- or on a create -- an unset message is not entered, since a
+        // nested message's annotations apply only when it is set.
+        seen.push(nested.fqn.clone());
+        let empty = unset_checks(index, nested, &format!("{path}."), seen);
+        seen.pop();
+        let otherwise = if empty.is_empty() {
+            TokenStream::new()
+        } else {
+            quote! {
+                else if !covered(#literal) {
+                    #( #empty )*
+                }
+            }
+        };
         let entered = if let Some(oneof) = &field.oneof {
             let oneof_ident = buffa_codegen::idents::make_field_ident(oneof);
             let enum_path: TokenStream = format!(
@@ -396,13 +420,13 @@ fn required_checks(
             quote! {
                 if let ::core::option::Option::Some(#enum_path::#variant(value)) = &#receiver.#oneof_ident {
                     #( #statements )*
-                }
+                } #otherwise
             }
         } else {
             quote! {
                 if let ::core::option::Option::Some(value) = #receiver.#ident.as_option() {
                     #( #statements )*
-                }
+                } #otherwise
             }
         };
         required.statements.push(quote! {
@@ -413,6 +437,54 @@ fn required_checks(
         required.descends = true;
     }
     Ok(required)
+}
+
+/// The statements checking the `REQUIRED` fields of an *unset* `message`,
+/// whose paths start with `prefix`: the [`required_checks`] an empty message
+/// would get, decided here rather than by reading one. In an empty message
+/// every `REQUIRED` field is unset -- the proto2 label included, which only
+/// a message that parsed is sure to carry -- so each is missing wherever the
+/// mask covers it, and a message beneath is again entered only when the mask
+/// names paths beneath it alone. Nothing is read, so a oneof member needs no
+/// enum path, and no message type has to be named to build an empty one.
+fn unset_checks(
+    index: &Index,
+    message: &Message,
+    prefix: &str,
+    seen: &mut Vec<String>,
+) -> Vec<TokenStream> {
+    let mut statements = Vec::new();
+    for field in &message.fields {
+        let path = format!("{prefix}{}", field.name);
+        let literal = Literal::string(&path);
+        if field.must_set {
+            statements.push(quote! {
+                if covered(#literal) {
+                    missing.push(#literal);
+                }
+            });
+        }
+        if field.kind != Kind::Message || field.repeated || field.is_map {
+            continue;
+        }
+        let Some(nested) = index.get(&field.type_name) else {
+            continue;
+        };
+        if seen.contains(&nested.fqn) {
+            continue;
+        }
+        seen.push(nested.fqn.clone());
+        let inner = unset_checks(index, nested, &format!("{path}."), seen);
+        seen.pop();
+        if !inner.is_empty() {
+            statements.push(quote! {
+                if !covered(#literal) && reaches(#literal) {
+                    #( #inner )*
+                }
+            });
+        }
+    }
+    statements
 }
 
 /// Fails if `field` is a oneof member of a message outside `package` that

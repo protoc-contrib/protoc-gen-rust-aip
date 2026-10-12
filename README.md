@@ -299,9 +299,13 @@ annotation.
 
 Nested messages follow AIP-203's rule that a nested message's annotations are
 independent of its parent's: a set singular message is descended into, and its
-own `REQUIRED` fields are reported as dotted paths (`destination.city`); an
-unset one is not. Repeated and map fields are present when not empty and are
-not descended into. A message type that contains itself is entered once per
+own `REQUIRED` fields are reported as dotted paths (`destination.city`). An
+unset one is not entered on a create, or when the mask names it whole — its own
+`REQUIRED` is reported at its level. A nested path is checked even when its
+parent is unset, reading the parent as empty: `update_mask: destination.city`
+with no `destination` writes `destination.city` as empty, so it would clear a
+`REQUIRED` field and is reported. Repeated and map fields are present when not
+empty and are not descended into. A message type that contains itself is entered once per
 path, since every path is a `&'static str` spelled out at generation time.
 
 Presence is read as protobuf reads it, the rule carried over from aip-go

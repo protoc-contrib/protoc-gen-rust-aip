@@ -402,3 +402,81 @@ fn takes_a_field_mask_paths_as_they_are() {
         ["confirmed"]
     );
 }
+
+#[test]
+fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
+    // The update writes `destination.city` as empty, clearing a REQUIRED field.
+    let paths = mask(&["destination.city"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["destination.city"]
+    );
+    // Two levels down, through two unset messages.
+    let paths = mask(&["destination.geo.latitude"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["destination.geo.latitude"]
+    );
+    // Through a message that is not REQUIRED itself.
+    let paths = mask(&["billing.city"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["billing.city"]
+    );
+    // Through a oneof member that is not the one set.
+    let paths = mask(&["voucher.code"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["voucher.code"]
+    );
+    let order = Order {
+        payment: Some(order::Payment::Card("4242".to_owned())),
+        ..Default::default()
+    };
+    assert_eq!(order.missing_required_paths(Some(&paths)), ["voucher.code"]);
+}
+
+#[test]
+fn a_nested_path_to_a_field_that_is_not_required_reports_nothing() {
+    let paths = mask(&["billing.line2", "destination.line2"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_create_does_not_enter_an_unset_message() {
+    // Only the REQUIRED fields of the order itself; nothing beneath the unset
+    // `destination`, `billing`, `voucher` or `root`.
+    assert_eq!(
+        Order::default().missing_required_paths(None),
+        ["title", "confirmed", "quantity", "destination", "stops"]
+    );
+}
+
+#[test]
+fn an_unset_message_named_whole_reports_only_itself() {
+    // REQUIRED itself: reported at its level, nothing beneath it.
+    let paths = mask(&["destination"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["destination"]
+    );
+    // Not REQUIRED: nothing at all.
+    let paths = mask(&["billing"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+    // The same one level down: `destination.geo` is named whole and is not
+    // REQUIRED, so its `latitude` is not checked.
+    let paths = mask(&["destination.geo"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+}
