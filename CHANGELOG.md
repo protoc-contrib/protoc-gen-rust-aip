@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.4.0...v0.5.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* the generated missing_required_paths, changed_immutable_paths and missing_required_request_paths are replaced by validate_required_fields, validate_immutable and validate_required, which return Results; requires aip-rs with those trait items.
+
+### Features
+
+* generate validate_* and imply_resource_name, and an impl for every message ([#43](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/43)) ([05ebf37](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/05ebf37abe18e8baaaed495253903519be8bf7e9))
+
 ## [0.4.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.3.0...v0.4.0) (2026-10-12)
 
 
