@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.2.1...v0.2.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* refuse a reference whose accessor collides with the resource name's ([#32](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/32)) ([c084241](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/c084241ffe98c12f3621fa23e73fc14edf3dc690))
+
 ## [0.2.1](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.2.0...v0.2.1) (2026-10-10)
 
 
