@@ -7,6 +7,7 @@
     reason = "asserting a field was reset to its default"
 )]
 
+use aip::FieldBehavior;
 use aip_fixture::proto::example::v1::{Address, Carrier, Event, Parcel, Shipment, event};
 use buffa::MessageField;
 

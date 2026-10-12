@@ -1,6 +1,7 @@
-//! Emits the AIP-203 clearing walks: `clear_output_only`, which drops what a
-//! client may not set from a request, and `clear_input_only`, which drops what
-//! a server may not return from a response. One walk, run for either behavior.
+//! Emits the AIP-203 clearing walks as `aip::FieldBehavior` items:
+//! `clear_output_only`, which drops what a client may not set from a request,
+//! and `clear_input_only`, which drops what a server may not return from a
+//! response. One walk, run for either behavior.
 //!
 //! Generated rather than reflective, and not as an optimisation: buffa 0.9
 //! exposes only `reflect(&self)`, and marks `reflect_mut` as designed but
@@ -48,21 +49,6 @@ impl Clearing {
         match self {
             Self::OutputOnly => "clear_output_only",
             Self::InputOnly => "clear_input_only",
-        }
-    }
-
-    /// What the walk is for, as its doc comment says it.
-    fn purpose(self) -> &'static str {
-        match self {
-            Self::OutputOnly => {
-                "Call it on an inbound request to drop server-owned values a \
-                 client should not be able to set, rather than rejecting the \
-                 request."
-            }
-            Self::InputOnly => {
-                "Call it on an outbound response, so a value the client may \
-                 send is never returned."
-            }
         }
     }
 }
@@ -246,20 +232,26 @@ fn reachable(
     generated.contains(&message.source_file).then_some(target)
 }
 
-/// Emits the walks for the messages declared in one file.
+/// Emits the walk for each message declared in one file that needs one, as a
+/// `FieldBehavior` item keyed by the message's fully-qualified name, for
+/// [`render`](super::render) to gather into the message's one impl.
 #[must_use]
 pub fn emit_file(
     file: &str,
     index: &Index,
     walks: &Walks,
     generated: &BTreeSet<String>,
-) -> TokenStream {
-    let impls: Vec<TokenStream> = index
+) -> BTreeMap<String, TokenStream> {
+    index
         .in_file(file)
         .filter(|message| walks.contains(&message.fqn))
-        .map(|message| emit_message(message, index, walks, generated))
-        .collect();
-    quote! { #( #impls )* }
+        .map(|message| {
+            (
+                message.fqn.clone(),
+                emit_message(message, index, walks, generated),
+            )
+        })
+        .collect()
 }
 
 fn emit_message(
@@ -268,10 +260,6 @@ fn emit_message(
     walks: &Walks,
     generated: &BTreeSet<String>,
 ) -> TokenStream {
-    let path: TokenStream = message
-        .rust_path
-        .parse()
-        .expect("a message path built from proto identifiers is a valid Rust path");
     let clearing = walks.clearing;
     let method = format_ident!("{}", clearing.method());
 
@@ -298,43 +286,22 @@ fn emit_message(
         ));
     }
 
-    let annotation = clearing.annotation();
-    let cleared: Vec<&str> = message
-        .fields
-        .iter()
-        .filter(|field| clearing.marks(field))
-        .map(|field| field.name.as_str())
-        .collect();
-    let summary = if cleared.is_empty() {
-        format!(
-            "It has no `{annotation}` fields of its own; the walk is emitted because \
-             a message beneath it does."
-        )
-    } else {
-        format!("Clears: `{}`.", cleared.join("`, `"))
-    };
-    let doc = super::doc(&format!(
-        "Clears every field annotated `{annotation}`, at any depth.\n\n\
-         {summary}\n\n\
-         {}\n\n\
-         See <https://google.aip.dev/203>.",
-        clearing.purpose(),
-    ));
-
     // `Default::default()` rather than a named type per field: that is what
     // lets one emitter clear a `String`, a `Vec`, a `MessageField`, an
     // `EnumValue` and an `Option` without this plugin duplicating buffa's
     // proto-to-Rust type mapping and going stale when it changes.
+    //
+    // A descent calls the walk on a nested message by method syntax, which
+    // auto-derefs whatever buffa holds it in -- a `Box` for a oneof member --
+    // where a fully-qualified call would have to name that pointer. The trait
+    // needs no import for it: this is a method of the trait being implemented.
     quote! {
         #[allow(
             clippy::default_trait_access,
             reason = "the concrete type of each field is buffa's to decide, not this plugin's"
         )]
-        impl #path {
-            #doc
-            pub fn #method(&mut self) {
-                #( #statements )*
-            }
+        fn #method(&mut self) {
+            #( #statements )*
         }
     }
 }

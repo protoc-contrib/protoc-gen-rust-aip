@@ -24,8 +24,8 @@ Every pass is implemented.
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or `None` for the server to mint one |
-| `MUTABLE_PATHS`, `implied_update_mask`, `changed_immutable_paths`, `missing_required_paths` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, the `IMMUTABLE` fields an update tries to change, and the `REQUIRED` fields a create or update leaves unset |
-| `OUTPUT_ONLY` and `INPUT_ONLY` clearing walks | recursive through singular, repeated, map and oneof fields |
+| `impl aip::FieldBehavior`: `MUTABLE_PATHS`, `implied_update_mask`, `changed_immutable_paths`, `missing_required_paths` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, the `IMMUTABLE` fields an update tries to change, and the `REQUIRED` fields a create or update leaves unset |
+| `impl aip::FieldBehavior`: `clear_output_only`, `clear_input_only` | AIP-203 clearing walks, recursive through singular, repeated, map and oneof fields |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 
 `REQUIRED` on a resource's fields is checked by `missing_required_paths`, not
@@ -117,14 +117,42 @@ On each resource, which of its fields an update may write — everything not
 three: the server owns it, it selects the target rather than being part of it,
 or it was settable once, on create.
 
+These, and the clearing walks below, are one trait,
+[`aip::FieldBehavior`](https://github.com/protoc-contrib/aip-rs), which the
+plugin implements for every message with any of these behaviors at some depth:
+
 ```rust
-impl Shipment {
-    pub const MUTABLE_PATHS: &'static [&'static str];
-    pub fn implied_update_mask(&self) -> Vec<&'static str>;
-    pub fn changed_immutable_paths(&self, existing: &Self) -> Vec<&'static str>;
-    pub fn missing_required_paths(&self, mask: Option<&[String]>) -> Vec<&'static str>;
+impl aip::FieldBehavior for Shipment {
+    const MUTABLE_PATHS: &'static [&'static str] = &["reference", /* ... */];
+    fn implied_update_mask(&self) -> Vec<&'static str> { /* ... */ }
+    fn changed_immutable_paths(&self, existing: &Self) -> Vec<&'static str> { /* ... */ }
+    fn missing_required_paths(&self, mask: Option<&[String]>) -> Vec<&'static str> { /* ... */ }
+    fn clear_output_only(&mut self) { /* ... */ }
+    fn clear_input_only(&mut self) { /* ... */ }
 }
 ```
+
+An impl holds only the items its message needs; every other item is the
+trait's default, the "nothing to do" answer — no writable paths, nothing
+missing, nothing changed, nothing to clear. So one server layer over
+`T: aip::FieldBehavior` handles every generated message alike, and a message
+that only needs a clearing walk (a request, or a message nested in a resource)
+still answers every item. The semantics of each item are documented on the
+trait, in aip-rs.
+
+Bring the trait into scope where its items are called, as for any trait;
+`Shipment::MUTABLE_PATHS` and `Shipment::implied_update_mask` still work as
+paths once it is:
+
+```rust
+use aip::FieldBehavior;
+
+let paths = Shipment::MUTABLE_PATHS;
+let implied = shipment.implied_update_mask();
+```
+
+The trait is not dyn-compatible — an associated constant, a method taking
+`&Self` — so generic code takes `T: FieldBehavior`, not `dyn FieldBehavior`.
 
 `changed_immutable_paths` is AIP-203's `IMMUTABLE` half: the fields an update
 sets to something other than the stored value. Neither expansion ever writes
@@ -246,9 +274,8 @@ optimisation. buffa 0.9 has **no reflective path to mutation in any mode**:
 `&mut dyn ReflectMessage` that nothing produces.
 
 ```rust
-impl Shipment {
-    /// Clears every field annotated `OUTPUT_ONLY`, at any depth.
-    pub fn clear_output_only(&mut self) {
+impl aip::FieldBehavior for Shipment {
+    fn clear_output_only(&mut self) {
         self.tracking_id = Default::default();
         for item in &mut self.parcels { item.clear_output_only(); }
         // ...
@@ -284,6 +311,8 @@ So the split is by what protovalidate can see:
   the request carries:
 
 ```rust
+use aip::FieldBehavior;
+
 // create: every REQUIRED field
 let missing = item.missing_required_paths(None);
 // update, after the implied mask is filled in
@@ -465,15 +494,16 @@ for `FooView<'_>` as well. The bodies are token-identical: a view's field holds
 `&str` where the owned message holds `String`, and every operation these
 accessors perform is spelled the same for both.
 
-`clear_output_only` and `clear_input_only` are not doubled. They take
-`&mut self`, and a view does not own what they would clear.
+`aip::FieldBehavior` is not implemented for views. Its clearing walks take
+`&mut self`, and a view does not own what they would clear; implying a mask
+means writing it onto the request, which is the owned message's job.
 
 Off by default, and it has to be: nothing in a `CodeGeneratorRequest` says
 whether buffa generated views, and emitting `impl FooView<'_>` when it did not
 is a compile error in the consumer rather than a missing method.
 
-`MUTABLE_PATHS` is unaffected — it is an associated constant on the resource, so
-there is nothing for a view to borrow.
+`MUTABLE_PATHS` needs no view either — it is an associated constant on the
+resource, so there is nothing for a view to borrow.
 
 ### Or skip the packaging output: `packaging=false`
 

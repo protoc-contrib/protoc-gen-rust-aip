@@ -1,7 +1,8 @@
-//! Emits `MUTABLE_PATHS` — which fields of a resource an update may write —
-//! and `implied_update_mask`, the mask AIP-134 implies when a client omits one,
-//! along with the two AIP-203 checks an update or create needs:
-//! `changed_immutable_paths` and `missing_required_paths`.
+//! Emits a resource's `aip::FieldBehavior` items: `MUTABLE_PATHS` — which
+//! fields an update may write — and `implied_update_mask`, the mask AIP-134
+//! implies when a client omits one, along with the two AIP-203 checks an update
+//! or create needs: `changed_immutable_paths` and `missing_required_paths`.
+//! Their semantics are documented on the trait, in aip-rs.
 //!
 //! Read off `google.api.field_behavior` — everything not `OUTPUT_ONLY`,
 //! `IDENTIFIER` or `IMMUTABLE`. The three are one question, not three: the
@@ -50,11 +51,12 @@
 //!
 //! See <https://google.aip.dev/134#field-masks>.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Result, bail};
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use super::{doc, short_name};
 use crate::messages::{Field, Index, Kind, Message};
 use crate::scan::{Registry, Resource};
 
@@ -73,21 +75,31 @@ fn writable(field: &Field) -> bool {
 ///
 /// If a `REQUIRED` field `missing_required_paths` has to check sits in a oneof
 /// of a message from another package, whose enum the emitted code cannot name.
-pub fn emit_file(file: &str, index: &Index, registry: &Registry) -> Result<TokenStream> {
-    let mut blocks = Vec::new();
+pub fn emit_file(
+    file: &str,
+    index: &Index,
+    registry: &Registry,
+) -> Result<BTreeMap<String, Vec<TokenStream>>> {
+    let mut items = BTreeMap::new();
     for resource in registry.by_file(file) {
-        if let Some(block) = emit_resource(file, index, resource)? {
-            blocks.push(block);
+        if let Some((fqn, resource_items)) = emit_resource(file, index, resource)? {
+            items.insert(fqn, resource_items);
         }
     }
-    Ok(quote! { #( #blocks )* })
+    Ok(items)
 }
 
-/// `MUTABLE_PATHS` for one resource, when it is declared on a message.
+/// The `FieldBehavior` items for one resource, when it is declared on a
+/// message, keyed by the message's fully-qualified name -- only those that
+/// differ from the trait's "nothing to do" defaults.
 ///
-/// A file-scope `resource_definition` has no message to hang it off, and no
+/// A file-scope `resource_definition` has no message to hang them off, and no
 /// fields to read a behaviour from, so it gets nothing.
-fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Result<Option<TokenStream>> {
+fn emit_resource(
+    file: &str,
+    index: &Index,
+    resource: &Resource,
+) -> Result<Option<(String, Vec<TokenStream>)>> {
     let Some(binding) = resource.message.as_ref() else {
         return Ok(None);
     };
@@ -98,33 +110,19 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Result<Optio
         return Ok(None);
     };
 
-    let path: TokenStream = binding
-        .rust_path
-        .parse()
-        .expect("a message path built from proto identifiers is a valid Rust path");
+    let mut items = Vec::new();
+
     let literals: Vec<Literal> = message
         .fields
         .iter()
         .filter(|field| writable(field))
         .map(|field| Literal::string(&field.name))
         .collect();
-
-    let short = short_name(&message.fqn);
-    let paths_doc = doc(&format!(
-        "The field paths an update may write on `{short}`.\n\n\
-         Every field not annotated `OUTPUT_ONLY`, `IDENTIFIER` or \
-         `IMMUTABLE`.\n\n\
-         This is the *expansion* of the `*` mask, full replacement, which \
-         AIP-134 reads as every writable field; an omitted mask is narrower — see \
-         [`implied_update_mask`](Self::implied_update_mask). It is not the check \
-         that a mask \
-         names only these -- that is `(buf.validate.field).field_mask.in` on the \
-         mask itself, which protovalidate runs along with every other rule on \
-         the request.\n\n\
-         Those two lists say the same thing and are kept in step by hand. A \
-         schema that adds a writable field and forgets the annotation gets a \
-         field this constant expands to and protovalidate then rejects.",
-    ));
+    if !literals.is_empty() {
+        items.push(quote! {
+            const MUTABLE_PATHS: &'static [&'static str] = &[#( #literals ),*];
+        });
+    }
 
     let checks: Vec<TokenStream> = message
         .fields
@@ -145,76 +143,30 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Result<Optio
             }
         })
         .collect();
-    let implied_doc = doc(&format!(
-        "The update mask AIP-134 implies when a client omits one: every field \
-         of [`MUTABLE_PATHS`](Self::MUTABLE_PATHS) this `{short}` populates, in \
-         declaration order.\n\n\
-         Populated as protobuf reads presence: a field with explicit presence — \
-         `optional`, a message, a oneof member — when set, even to its zero \
-         value; any other scalar when not its zero value; a repeated field or a \
-         map when not empty.\n\n\
-         Reads `self` and returns the paths; store them on the request's \
-         `update_mask` when it is empty.\n\n\
-         See <https://google.aip.dev/134#field-masks>.",
-    ));
-
-    let immutable_fn = changed_immutable_paths_fn(message);
-    let implied_body = empty_or("paths", &checks);
-    let immutable_doc = doc(&format!(
-        "The `IMMUTABLE` fields of `{short}` this update sets to a value other \
-         than `existing`'s, in declaration order.\n\n\
-         AIP-203: a service rejects a request that changes an immutable field. \
-         An update that echoes the stored value back, or leaves the field \
-         unset, changes nothing and is not reported. Neither the implied mask \
-         nor `MUTABLE_PATHS` ever writes one, so without this check a changed \
-         value would be dropped silently rather than refused. A repeated field \
-         that is also `UNORDERED_LIST` is compared ignoring order.\n\n\
-         ```text\n\
-         let changed = update.changed_immutable_paths(&stored);\n\
-         if !changed.is_empty() {{ /* InvalidArgument */ }}\n\
-         ```",
-    ));
-
-    let required_fn = missing_required_paths_fn(index, message)?;
-
-    Ok(Some(quote! {
-        impl #path {
-            #paths_doc
-            pub const MUTABLE_PATHS: &'static [&'static str] = &[#( #literals ),*];
-
-            #immutable_doc
-            #[must_use]
-            #immutable_fn
-
-            #required_fn
-
-            #implied_doc
-            #[must_use]
-            pub fn implied_update_mask(&self) -> ::std::vec::Vec<&'static str> {
-                #implied_body
+    if !checks.is_empty() {
+        let body = collect_into("paths", &checks);
+        items.push(quote! {
+            fn implied_update_mask(&self) -> ::std::vec::Vec<&'static str> {
+                #body
             }
-        }
-    }))
-}
+        });
+    }
 
-/// `changed_immutable_paths`, whose body is empty when `message` has no field
-/// to check -- where a read `existing` would be an unused-variable warning in
-/// every consumer.
-fn changed_immutable_paths_fn(message: &Message) -> TokenStream {
-    let checks = immutable_checks(message);
-    if checks.is_empty() {
-        return quote! {
-            pub fn changed_immutable_paths(&self, _existing: &Self) -> ::std::vec::Vec<&'static str> {
-                ::std::vec::Vec::new()
+    let immutable = immutable_checks(message);
+    if !immutable.is_empty() {
+        let body = collect_into("changed", &immutable);
+        items.push(quote! {
+            fn changed_immutable_paths(&self, existing: &Self) -> ::std::vec::Vec<&'static str> {
+                #body
             }
-        };
+        });
     }
-    let body = empty_or("changed", &checks);
-    quote! {
-        pub fn changed_immutable_paths(&self, existing: &Self) -> ::std::vec::Vec<&'static str> {
-            #body
-        }
+
+    if let Some(required) = missing_required_paths_fn(index, message)? {
+        items.push(required);
     }
+
+    Ok(Some((message.fqn.clone(), items)))
 }
 
 /// What [`required_checks`] found to emit for one message.
@@ -226,37 +178,9 @@ struct Required {
     descends: bool,
 }
 
-/// `missing_required_paths` and its doc, whose body is empty when nothing beneath
-/// `resource` is `REQUIRED` -- where a read `mask` would be an unused-variable
-/// warning in every consumer.
-fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<TokenStream> {
-    let short = short_name(&resource.fqn);
-    let doc = doc(&format!(
-        "The `REQUIRED` fields of `{short}` that are unset, in declaration \
-         order.\n\n\
-         AIP-203: a create must set every `REQUIRED` field, so `None` checks \
-         them all. A partial update may omit any of them, but one its mask \
-         names must be set, or the update would clear it, so `Some(paths)` \
-         checks only the fields the mask names -- a path naming a message \
-         checks everything beneath it, a nested path just that field. Expand \
-         `*` with [`MUTABLE_PATHS`](Self::MUTABLE_PATHS) first.\n\n\
-         Unset is protobuf presence, as \
-         [`implied_update_mask`](Self::implied_update_mask) reads it: a \
-         `REQUIRED` `bool` without explicit presence must be `true`. A set \
-         singular message is descended into, its own `REQUIRED` fields \
-         reported as dotted paths (`address.city`). An unset one is not on a \
-         create, or when the mask names it whole -- its own `REQUIRED` is \
-         reported at its level -- but a nested path is checked even when its \
-         parent is unset, reading the parent as empty: the update writes that \
-         path, so it would clear it. Repeated and map fields are never \
-         descended into. A message type that contains itself is descended into \
-         once per path.\n\n\
-         ```text\n\
-         let missing = item.missing_required_paths(None); // create\n\
-         let missing = item.missing_required_paths(Some(&update_mask.paths)); // update\n\
-         ```\n\n\
-         See <https://google.aip.dev/203#required>.",
-    ));
+/// `missing_required_paths`, or `None` when nothing beneath `resource` is
+/// `REQUIRED` and the trait's default already answers.
+fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<Option<TokenStream>> {
     let mut seen = vec![resource.fqn.clone()];
     let required = required_checks(
         index,
@@ -267,16 +191,7 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<TokenS
         &mut seen,
     )?;
     if required.statements.is_empty() {
-        return Ok(quote! {
-            #doc
-            #[must_use]
-            pub fn missing_required_paths(
-                &self,
-                _mask: ::core::option::Option<&[::std::string::String]>,
-            ) -> ::std::vec::Vec<&'static str> {
-                ::std::vec::Vec::new()
-            }
-        });
+        return Ok(None);
     }
 
     // A path is covered when the mask names it or a message above it -- the
@@ -298,9 +213,7 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<TokenS
         TokenStream::new()
     };
     let statements = required.statements;
-    Ok(quote! {
-        #doc
-        #[must_use]
+    Ok(Some(quote! {
         #[allow(
             clippy::collapsible_if,
             reason = "collapsing a test and a binding takes a let chain, which needs edition 2024"
@@ -309,7 +222,7 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<TokenS
             clippy::too_many_lines,
             reason = "one statement per REQUIRED path, spelled out at generation time"
         )]
-        pub fn missing_required_paths(
+        fn missing_required_paths(
             &self,
             mask: ::core::option::Option<&[::std::string::String]>,
         ) -> ::std::vec::Vec<&'static str> {
@@ -328,7 +241,7 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<TokenS
             #( #statements )*
             missing
         }
-    })
+    }))
 }
 
 /// The statements checking the `REQUIRED` fields of `message`, read through
@@ -506,13 +419,8 @@ fn check_oneof_reachable(package: &str, message: &Message, field: &Field) -> Res
     Ok(())
 }
 
-/// A body collecting `statements`' pushes into a vector named `name`, or an
-/// empty vector outright when there are none -- a `mut` binding nothing pushes
-/// to would be an unused-mut warning in every consumer.
-fn empty_or(name: &str, statements: &[TokenStream]) -> TokenStream {
-    if statements.is_empty() {
-        return quote! { ::std::vec::Vec::new() };
-    }
+/// A body collecting `statements`' pushes into a vector named `name`.
+fn collect_into(name: &str, statements: &[TokenStream]) -> TokenStream {
     let name = format_ident!("{name}");
     quote! {
         let mut #name = ::std::vec::Vec::new();
@@ -722,7 +630,7 @@ mod tests {
         })
     }
 
-    fn missing_required_paths_for(index: &Index) -> Result<TokenStream> {
+    fn missing_required_paths_for(index: &Index) -> Result<Option<TokenStream>> {
         let order = index.get(".api.Order").expect("api.Order is indexed");
         missing_required_paths_fn(index, order)
     }

@@ -72,9 +72,9 @@ pub struct Options {
     /// `ServiceRequest` that derefs to the *view*, so without this the
     /// accessors are emitted onto a type the handler never holds.
     ///
-    /// Only the read-only accessors are doubled. `clear_output_only` and
-    /// `clear_input_only` take `&mut self`, and a view does not own what they
-    /// would clear.
+    /// Only the read-only accessors are doubled. `aip::FieldBehavior` is not
+    /// implemented for views: its clearing walks take `&mut self`, and a view
+    /// does not own what they would clear.
     pub views: bool,
 
     /// Whether a `google.api.resource_reference` to a resource type the
@@ -142,23 +142,24 @@ pub fn render(
 
         let resources = resource::emit_file(name, &package, registry, options.views);
         let creates = resource::emit_create_ids(name, index, registry, options.views);
-        let outputs = behavior::emit_file(name, index, &outputs, &generated);
-        let inputs = behavior::emit_file(name, index, &inputs, &generated);
-        let masks = field_mask::emit_file(name, index, registry)?;
+        let behaviors = field_behavior_impls(
+            name,
+            index,
+            &[
+                behavior::emit_file(name, index, &outputs, &generated),
+                behavior::emit_file(name, index, &inputs, &generated),
+            ],
+            field_mask::emit_file(name, index, registry)?,
+        );
         let filters = filter::emit_file(name, index, &lists);
-        if resources.is_empty()
-            && creates.is_empty()
-            && outputs.is_empty()
-            && inputs.is_empty()
-            && masks.is_empty()
-            && filters.is_empty()
+        if resources.is_empty() && creates.is_empty() && behaviors.is_empty() && filters.is_empty()
         {
             continue;
         }
         by_package
             .entry(package)
             .or_default()
-            .push(quote! { #resources #creates #outputs #inputs #masks #filters });
+            .push(quote! { #resources #creates #behaviors #filters });
     }
 
     let mut files = Vec::new();
@@ -188,6 +189,41 @@ pub fn render(
         module_tree(&by_package, options)?,
     ));
     Ok(files)
+}
+
+/// One `impl ::aip::FieldBehavior` per message declared in `file` that any
+/// pass emitted an item for, in declaration order: the clearing walks a
+/// message needs and, on a resource, the update-mask and check items. A type
+/// implements a trait once, so the passes' items are gathered here rather than
+/// each emitting its own impl. Every item left out is the trait's "nothing to
+/// do" default.
+fn field_behavior_impls(
+    file: &str,
+    index: &Index,
+    walks: &[BTreeMap<String, TokenStream>],
+    resources: BTreeMap<String, Vec<TokenStream>>,
+) -> TokenStream {
+    let mut resources = resources;
+    let impls = index.in_file(file).filter_map(|message| {
+        let mut items: Vec<TokenStream> = walks
+            .iter()
+            .filter_map(|walk| walk.get(&message.fqn).cloned())
+            .collect();
+        items.extend(resources.remove(&message.fqn).unwrap_or_default());
+        if items.is_empty() {
+            return None;
+        }
+        let path: TokenStream = message
+            .rust_path
+            .parse()
+            .expect("a message path built from proto identifiers is a valid Rust path");
+        Some(quote! {
+            impl ::aip::FieldBehavior for #path {
+                #( #items )*
+            }
+        })
+    });
+    quote! { #( #impls )* }
 }
 
 /// The file a package's output is written to.

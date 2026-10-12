@@ -4,6 +4,7 @@
 //! `(buf.validate.field).field_mask.in`, which protovalidate runs. See the
 //! module docs on `emit::field_mask`.
 
+use aip::FieldBehavior;
 use aip_fixture::proto::example::v1::{Book, Shipment};
 
 #[test]
@@ -478,5 +479,39 @@ fn an_unset_message_named_whole_reports_only_itself() {
         Order::default()
             .missing_required_paths(Some(&paths))
             .is_empty()
+    );
+}
+
+// --- FieldBehavior as one generic layer -------------------------------------
+
+/// What a server layer over every request does, without knowing the type.
+fn admit<T: FieldBehavior>(message: &mut T) -> Vec<&'static str> {
+    message.clear_output_only();
+    message.missing_required_paths(None)
+}
+
+#[test]
+fn one_generic_layer_handles_every_generated_message() {
+    // Carrier only has a field to clear: every other item is the trait's
+    // "nothing to do" default.
+    let mut carrier = Carrier {
+        name: "DHL".to_owned(),
+        scac: "SERVER".to_owned(),
+        ..Default::default()
+    };
+    assert!(admit(&mut carrier).is_empty());
+    assert_eq!(carrier.scac, "");
+    assert!(Carrier::MUTABLE_PATHS.is_empty());
+    assert!(carrier.implied_update_mask().is_empty());
+    assert!(
+        carrier
+            .changed_immutable_paths(&Carrier::default())
+            .is_empty()
+    );
+
+    // A resource gets its own checks through the same layer.
+    assert_eq!(
+        admit(&mut Order::default()),
+        ["title", "confirmed", "quantity", "destination", "stops"]
     );
 }
