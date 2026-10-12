@@ -94,6 +94,27 @@ fn clears_an_optional_output_only_field() {
 
 use aip_fixture::proto::example::v1::{Lamp, Shade};
 
+/// The paths a check reports, as strings: empty when it passes.
+trait Reported {
+    fn reported(self) -> Vec<String>;
+}
+
+impl Reported for Result<(), aip::RequiredError> {
+    fn reported(self) -> Vec<String> {
+        self.err().map_or_else(Vec::new, |error| {
+            error.paths.iter().map(ToString::to_string).collect()
+        })
+    }
+}
+
+impl Reported for Result<(), aip::ImmutableError> {
+    fn reported(self) -> Vec<String> {
+        self.err().map_or_else(Vec::new, |error| {
+            error.paths.iter().map(ToString::to_string).collect()
+        })
+    }
+}
+
 #[test]
 fn a_required_field_is_always_implied() {
     // `required` has no presence of its own in buffa -- a message that parsed
@@ -122,6 +143,6 @@ fn a_changed_optional_immutable_field_is_reported() {
         model: Some("m2".to_owned()),
         ..Default::default()
     };
-    assert_eq!(update.changed_immutable_paths(&stored), ["model"]);
-    assert!(Lamp::default().changed_immutable_paths(&stored).is_empty());
+    assert_eq!(update.validate_immutable(&stored).reported(), ["model"]);
+    assert!(Lamp::default().validate_immutable(&stored).is_ok());
 }

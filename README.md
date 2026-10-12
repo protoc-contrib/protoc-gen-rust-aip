@@ -24,12 +24,13 @@ Every pass is implemented.
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or `None` for the server to mint one |
-| `impl aip::FieldBehavior`: `MUTABLE_PATHS`, `implied_update_mask`, `changed_immutable_paths`, `missing_required_paths` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, the `IMMUTABLE` fields an update tries to change, and the `REQUIRED` fields a create or update leaves unset |
+| `impl aip::FieldBehavior`: `MUTABLE_PATHS`, `implied_update_mask`, `validate_immutable`, `validate_required_fields` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, and the checks that an update changes no `IMMUTABLE` field and a create or update leaves no `REQUIRED` one unset |
 | `impl aip::FieldBehavior`: `clear_output_only`, `clear_input_only` | AIP-203 clearing walks, recursive through singular, repeated, map and oneof fields |
-| `impl aip::FieldBehavior`: `missing_required_request_paths`, `imply_update_mask` | AIP-133/134/233/235: the resource's check and implied mask applied the way a create, update or batch request asks, reported as `aip::FieldPath`s from the request |
+| `impl aip::FieldBehavior`: `validate_required`, `imply_resource_name`, `imply_update_mask` | AIP-133/134/233/235: the resource's check, its name and its implied mask applied the way a create, update or batch request asks, failures reported as `aip::FieldPath`s from the request |
+| `impl aip::FieldBehavior` on every other message | empty: the trait's "nothing to do" defaults, so code generic over the trait needs no impls of its own |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 
-`REQUIRED` on a resource's fields is checked by `missing_required_paths`, not
+`REQUIRED` on a resource's fields is checked by `validate_required_fields`, not
 protovalidate, because the resource is shared by its create and update requests
 and protovalidate cannot tell which one it is in — see [Field
 behavior](#field-behavior-required-is-checked-here-value-rules-are-protovalidates).
@@ -120,25 +121,30 @@ or it was settable once, on create.
 
 These, and the clearing walks below, are one trait,
 [`aip::FieldBehavior`](https://github.com/protoc-contrib/aip-rs), which the
-plugin implements for every message with any of these behaviors at some depth:
+plugin implements for every message it generates:
 
 ```rust
 impl aip::FieldBehavior for Shipment {
     const MUTABLE_PATHS: &'static [&'static str] = &["reference", /* ... */];
     fn implied_update_mask(&self) -> Vec<&'static str> { /* ... */ }
-    fn changed_immutable_paths(&self, existing: &Self) -> Vec<&'static str> { /* ... */ }
-    fn missing_required_paths(&self, mask: Option<&[String]>) -> Vec<&'static str> { /* ... */ }
+    fn validate_immutable(&self, existing: &Self) -> Result<(), aip::ImmutableError> { /* ... */ }
+    fn validate_required_fields(&self, mask: Option<&[String]>) -> Result<(), aip::RequiredError> { /* ... */ }
     fn clear_output_only(&mut self) { /* ... */ }
     fn clear_input_only(&mut self) { /* ... */ }
 }
+
+impl aip::FieldBehavior for Voucher {} // nothing to do: every item is the default
 ```
 
 An impl holds only the items its message needs; every other item is the
-trait's default, the "nothing to do" answer — no writable paths, nothing
-missing, nothing changed, nothing to clear. So one server layer over
-`T: aip::FieldBehavior` handles every generated message alike, and a message
-that only needs a clearing walk (a request, or a message nested in a resource)
-still answers every item. The semantics of each item are documented on the
+trait's default, the "nothing to do" answer — no writable paths, nothing to
+imply, `Ok(())` from every check, nothing to clear. Every message gets an impl,
+an empty one when it needs nothing, so one server layer over
+`T: aip::FieldBehavior` handles every request a service takes — a table naming
+each of them type-checks without impls of the consumer's own. The items are
+named after what they do: `validate_*` returns `Ok(())` or the fields that fail,
+`imply_*` fills in what a client may leave to the server, `clear_*` drops what
+one side of the wire may not see. The semantics of each item are documented on the
 trait, in aip-rs.
 
 Bring the trait into scope where its items are called, as for any trait;
@@ -155,15 +161,15 @@ let implied = shipment.implied_update_mask();
 The trait is not dyn-compatible — an associated constant, a method taking
 `&Self` — so generic code takes `T: FieldBehavior`, not `dyn FieldBehavior`.
 
-`changed_immutable_paths` is AIP-203's `IMMUTABLE` half: the fields an update
-sets to something other than the stored value. Neither expansion ever writes
-one, so without it a changed value would be dropped silently rather than
-refused; an echoed-back value, or an unset one, is not reported. A repeated
-field that is also `UNORDERED_LIST` is compared ignoring order, as a multiset,
-since the service does not promise to keep it. aip-go's `ChangedImmutablePaths`
-answers the same.
+`validate_immutable` is AIP-203's `IMMUTABLE` half: it fails with the fields an
+update sets to something other than the stored value. Neither expansion ever
+writes one, so without it a changed value would be dropped silently rather
+than refused; an echoed-back value, or an unset one, passes. A repeated field
+that is also `UNORDERED_LIST` is compared ignoring order, as a multiset, since
+the service does not promise to keep it. aip-go's `ValidateImmutable` answers
+the same.
 
-`missing_required_paths` is the `REQUIRED` half; see [Field
+`validate_required_fields` is the `REQUIRED` half; see [Field
 behavior](#field-behavior-required-is-checked-here-value-rules-are-protovalidates).
 
 **Stricter than AIP-161, on purpose.** AIP-161 has a mask naming an
@@ -308,17 +314,17 @@ So the split is by what protovalidate can see:
   field itself, `update_mask` — and value rules on the resource's fields:
   lengths, patterns, ranges. A value rule on a `REQUIRED` field needs
   `ignore = IGNORE_IF_ZERO_VALUE`, so an update that leaves it out passes.
-- **`missing_required_paths`** reads `REQUIRED` off the resource, with the mask
-  the request carries:
+- **`validate_required_fields`** reads `REQUIRED` off the resource, with the
+  mask the request carries:
 
 ```rust
 use aip::FieldBehavior;
 
 // create: every REQUIRED field
-let missing = item.missing_required_paths(None);
+item.validate_required_fields(None)?;
 // update, after the implied mask is filled in
-let missing = item.missing_required_paths(Some(&update_mask.paths));
-if !missing.is_empty() { /* InvalidArgument, naming each path */ }
+item.validate_required_fields(Some(&update_mask.paths))?;
+// Err(aip::RequiredError { paths }): InvalidArgument, naming each path
 ```
 
 `Some(paths)` checks only the fields the mask names. A path naming a message
@@ -349,48 +355,63 @@ A `REQUIRED` field in a oneof of a message from *another* package fails
 generation: the check names the oneof's enum by its path within the package,
 which does not reach another package's.
 
-aip-go's `MissingRequiredPaths` answers the same, by reflection.
+aip-go's `ValidateRequiredFields` answers the same, by reflection.
 
-#### Per request: `missing_required_request_paths` and `imply_update_mask`
+#### Per request: `validate_required`, `imply_resource_name` and `imply_update_mask`
 
-A server holds a request, not a resource, so the two are also generated on
+A server holds a request, not a resource, so these are also generated on
 every service method's create, update and batch request — and on a batch's
 entry type — applying the resource's items the way the method asks:
 
-| Request | Recognized by | `missing_required_request_paths` | `imply_update_mask` |
-| --- | --- | --- | --- |
-| create (AIP-133) | a singular field of a resource type, no `update_mask` | `resource.missing_required_paths(None)` | — |
-| update (AIP-134) | that, plus a `google.protobuf.FieldMask update_mask` | `resource.missing_required_paths(Some(mask))`; an unset mask names nothing, never a create | fills an unset or empty mask from `resource.implied_update_mask()` |
-| batch (AIP-233/235) | a repeated `requests` of creates or updates | each entry's, under `requests[i]` | each update entry's |
+| Request | Recognized by | `validate_required` | `imply_resource_name` | `imply_update_mask` |
+| --- | --- | --- | --- | --- |
+| create (AIP-133) | a singular field of a resource type, no `update_mask` | `resource.validate_required_fields(None)` | with a `<resource field>_id` string: mints an omitted id with `new_id`, copies `parent` onto the resource's own, and builds `name` from the pattern | — |
+| update (AIP-134) | that, plus a `google.protobuf.FieldMask update_mask` | `resource.validate_required_fields(Some(mask))`; an unset mask names nothing, never a create | — (the name selects the target) | fills an unset or empty mask from `resource.implied_update_mask()` |
+| batch (AIP-233/235) | a repeated `requests` of creates or updates | each entry's, under `requests[i]` | each create entry's | each update entry's |
+
+The name's shape is read off the resource's first pattern at generation time,
+so the emitted code only formats: a top-level pattern puts the id after its
+literal prefix (`orders/{order}` names `orders/<id>`), a nested one under the
+request's `parent` and the collection segment
+(`orders/{order}/lines/{line}` names `<parent>/lines/<id>`). An id the client
+sent is kept as is — its format is for the request's protovalidate rules.
 
 ```rust
-impl aip::FieldBehavior for UpdateOrderRequest {
-    fn missing_required_request_paths(&self) -> Vec<aip::FieldPath> { /* ... */ }
-    fn imply_update_mask(&mut self) { /* ... */ }
+impl aip::FieldBehavior for CreateOrderRequest {
+    fn validate_required(&self) -> Result<(), aip::RequiredError> { /* ... */ }
+    fn imply_resource_name(&mut self, new_id: &mut dyn FnMut() -> String) {
+        if let Some(resource) = self.order.as_option_mut() {
+            if self.order_id.is_empty() {
+                self.order_id = new_id();
+            }
+            resource.name = format!("orders/{}", self.order_id);
+        }
+    }
 }
 ```
 
-Each path is an `aip::FieldPath` from the request — `requests[1].order.title` —
-carrying field names only; a server that reports a protovalidate violation
-resolves numbers and types from its descriptor pool. With the trait's
-"nothing to do" defaults on every other message, one interceptor covers every
-request:
+A failing path is an `aip::FieldPath` from the request —
+`requests[1].order.title` — carrying field names only; a server that reports a
+protovalidate violation resolves numbers and types from its descriptor pool.
+The trait's own `imply_request` runs `imply_resource_name` then
+`imply_update_mask`, so one interceptor covers every request:
 
 ```rust
 use aip::FieldBehavior;
 
 request.clear_output_only();
-request.imply_update_mask();
-for path in request.missing_required_request_paths() {
-    // a `required` violation at `path`
+request.imply_request(&mut || uuid::Uuid::now_v7().to_string());
+if let Err(error) = request.validate_required() {
+    for path in &error.paths {
+        // a `required` violation at `path`
+    }
 }
 ```
 
 The calls go through the resource's own impl, and a batch's through its entry
 type's, so their files have to be generated in the same run; generation fails
-otherwise. Every resource gets an impl, an empty one if nothing in it differs
-from the defaults. aip-go's `MissingRequiredRequestPaths` and `ImplyUpdateMask`
-answer the same, by reflection.
+otherwise. aip-go's `ValidateRequired`, `ImplyResourceName`, `ImplyUpdateMask`
+and `ImplyRequest` answer the same, by reflection.
 
 What *is* still worth a lint is the inverse of the old one: a `REQUIRED` field
 on a resource that also carries `(buf.validate.field).required` is one every

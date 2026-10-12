@@ -1,22 +1,23 @@
-//! Emits a request's `aip::FieldBehavior` items: `missing_required_request_paths`
-//! and `imply_update_mask`, which apply a resource's own items the way an AIP
-//! standard method asks. Their semantics are documented on the trait, in
-//! aip-rs; aip-go's `MissingRequiredRequestPaths` and `ImplyUpdateMask` answer
-//! the same by reflection.
+//! Emits a request's `aip::FieldBehavior` items: `validate_required`,
+//! `imply_resource_name` and `imply_update_mask`, which apply a resource's own
+//! items the way an AIP standard method asks. Their semantics are documented on
+//! the trait, in aip-rs; aip-go's `ValidateRequired`, `ImplyResourceName` and
+//! `ImplyUpdateMask` answer the same by reflection.
 //!
 //! Three shapes are recognized, on a service method's request and on the
 //! entries of a batch one:
 //!
 //! - a create (AIP-133): a singular field whose type is a resource, and no
-//!   `update_mask`;
+//!   `update_mask`. When it also has a `<resource field>_id` string, the server
+//!   names the resource: `imply_resource_name`;
 //! - an update (AIP-134): that resource field and a `google.protobuf.FieldMask
 //!   update_mask` beside it. The schema, not the value, makes it an update, so
 //!   an unset mask names nothing rather than reading as a create;
 //! - a batch (AIP-233, AIP-235): a repeated `requests` whose entries are
-//!   creates or updates, each checked as its own request under `requests[i]`.
+//!   creates or updates, each handled as its own request under `requests[i]`.
 //!
 //! Anything else — a response holding a resource, a request of another shape —
-//! gets neither item, and the trait's defaults answer for it.
+//! gets none of these items, and the trait's defaults answer for it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,7 +26,7 @@ use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
 use crate::messages::{Field, Index, Kind, Message};
-use crate::scan::Registry;
+use crate::scan::{Registry, Resource};
 
 /// The request-level items for every create, update and batch request declared
 /// in `file`, keyed by the message's fully-qualified name.
@@ -52,7 +53,10 @@ pub fn emit_file(
             continue;
         };
         check_generated(index, generated, message, &shape)?;
-        items.insert(message.fqn.clone(), emit(&shape));
+        items.insert(
+            message.fqn.clone(),
+            emit(index, &resources, message, &shape),
+        );
     }
     Ok(items)
 }
@@ -66,24 +70,35 @@ enum Shape<'a> {
         resource: &'a Field,
         mask: &'a Field,
     },
-    /// A batch, with its `requests` field and whether its entries are updates.
-    Batch { entries: &'a Field, updates: bool },
+    /// A batch, with its `requests` field, its entry type and whether its
+    /// entries are updates.
+    Batch {
+        entries: &'a Field,
+        entry: &'a Message,
+        updates: bool,
+    },
 }
 
-/// The fully-qualified names of the messages declared as resources.
-fn resources(index: &Index, registry: &Registry) -> BTreeSet<String> {
-    let bound: BTreeSet<(&str, &str)> = registry
+/// The messages declared as resources, by fully-qualified name, with their
+/// declaration.
+fn resources<'r>(index: &Index, registry: &'r Registry) -> BTreeMap<String, &'r Resource> {
+    let bound: BTreeMap<(&str, &str), &Resource> = registry
         .resources
         .iter()
         .filter_map(|resource| {
             let binding = resource.message.as_ref()?;
-            Some((resource.package.as_str(), binding.rust_path.as_str()))
+            Some((
+                (resource.package.as_str(), binding.rust_path.as_str()),
+                resource,
+            ))
         })
         .collect();
     index
         .all()
-        .filter(|message| bound.contains(&(message.package.as_str(), message.rust_path.as_str())))
-        .map(|message| message.fqn.clone())
+        .filter_map(|message| {
+            let resource = bound.get(&(message.package.as_str(), message.rust_path.as_str()))?;
+            Some((message.fqn.clone(), *resource))
+        })
         .collect()
 }
 
@@ -114,8 +129,8 @@ fn entries_field(message: &Message) -> Option<&Field> {
 
 /// Which standard method `message` is a request for, if any.
 fn shape<'a>(
-    index: &Index,
-    resources: &BTreeSet<String>,
+    index: &'a Index,
+    resources: &BTreeMap<String, &Resource>,
     message: &'a Message,
 ) -> Option<Shape<'a>> {
     if let Some(entries) = entries_field(message) {
@@ -123,10 +138,12 @@ fn shape<'a>(
         return match single(resources, entry)? {
             Shape::Create { .. } => Some(Shape::Batch {
                 entries,
+                entry,
                 updates: false,
             }),
             Shape::Update { .. } => Some(Shape::Batch {
                 entries,
+                entry,
                 updates: true,
             }),
             Shape::Batch { .. } => None,
@@ -136,13 +153,13 @@ fn shape<'a>(
 }
 
 /// Whether `message` is a create or an update request, by its fields.
-fn single<'a>(resources: &BTreeSet<String>, message: &'a Message) -> Option<Shape<'a>> {
+fn single<'a>(resources: &BTreeMap<String, &Resource>, message: &'a Message) -> Option<Shape<'a>> {
     let resource = message.fields.iter().find(|field| {
         field.kind == Kind::Message
             && !field.repeated
             && !field.is_map
             && field.oneof.is_none()
-            && resources.contains(&field.type_name)
+            && resources.contains_key(&field.type_name)
     })?;
     let mask = message.fields.iter().find(|field| {
         field.name == "update_mask"
@@ -186,10 +203,17 @@ fn check_generated(
 }
 
 /// The items for one request.
-fn emit(shape: &Shape<'_>) -> Vec<TokenStream> {
+fn emit(
+    index: &Index,
+    resources: &BTreeMap<String, &Resource>,
+    request: &Message,
+    shape: &Shape<'_>,
+) -> Vec<TokenStream> {
     match shape {
         Shape::Create { resource } => {
-            vec![missing(resource, &quote! { ::core::option::Option::None })]
+            let mut items = vec![validate(resource, &quote! { ::core::option::Option::None })];
+            items.extend(name(index, resources, request, resource));
+            items
         }
         Shape::Update { resource, mask } => {
             let ident = buffa_codegen::idents::make_field_ident(&mask.name);
@@ -200,22 +224,29 @@ fn emit(shape: &Shape<'_>) -> Vec<TokenStream> {
                         .map_or(&[] as &[::std::string::String], |mask| mask.paths.as_slice()),
                 )
             };
-            vec![missing(resource, &paths), imply(resource, mask)]
+            vec![validate(resource, &paths), imply(resource, mask)]
         }
-        Shape::Batch { entries, updates } => {
+        Shape::Batch {
+            entries,
+            entry,
+            updates,
+        } => {
             let ident = buffa_codegen::idents::make_field_ident(&entries.name);
-            let name = Literal::string(&entries.name);
+            let name_literal = Literal::string(&entries.name);
             let mut items = vec![quote! {
-                fn missing_required_request_paths(&self) -> ::std::vec::Vec<::aip::FieldPath> {
-                    self.#ident
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(index, request)| {
-                            ::aip::FieldBehavior::missing_required_request_paths(request)
-                                .into_iter()
-                                .map(move |path| ::aip::FieldPath::index(#name, index).join(path))
-                        })
-                        .collect()
+                fn validate_required(&self) -> ::core::result::Result<(), ::aip::RequiredError> {
+                    ::aip::RequiredError::check(
+                        self.#ident
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, request)| {
+                                ::aip::FieldBehavior::validate_required(request)
+                                    .err()
+                                    .map(|error| error.under(::aip::FieldPath::index(#name_literal, index)))
+                            })
+                            .flat_map(|error| error.paths)
+                            .collect(),
+                    )
                 }
             }];
             if *updates {
@@ -226,24 +257,35 @@ fn emit(shape: &Shape<'_>) -> Vec<TokenStream> {
                         }
                     }
                 });
+            } else if let Some(Shape::Create { resource }) = single(resources, entry)
+                && name(index, resources, entry, resource).is_some()
+            {
+                items.push(quote! {
+                    fn imply_resource_name(
+                        &mut self,
+                        new_id: &mut dyn ::core::ops::FnMut() -> ::std::string::String,
+                    ) {
+                        for request in &mut self.#ident {
+                            ::aip::FieldBehavior::imply_resource_name(request, new_id);
+                        }
+                    }
+                });
             }
             items
         }
     }
 }
 
-/// `missing_required_request_paths` for a create or update: the resource's
-/// `missing_required_paths` with `mask`, each path under the resource field.
-fn missing(resource: &Field, mask: &TokenStream) -> TokenStream {
+/// `validate_required` for a create or update: the resource's
+/// `validate_required_fields` with `mask`, each path under the resource field.
+fn validate(resource: &Field, mask: &TokenStream) -> TokenStream {
     let ident = buffa_codegen::idents::make_field_ident(&resource.name);
     let name = Literal::string(&resource.name);
     quote! {
-        fn missing_required_request_paths(&self) -> ::std::vec::Vec<::aip::FieldPath> {
-            self.#ident.as_option().map_or_else(::std::vec::Vec::new, |resource| {
-                ::aip::FieldBehavior::missing_required_paths(resource, #mask)
-                    .into_iter()
-                    .map(|path| ::aip::FieldPath::field(#name).join(path))
-                    .collect()
+        fn validate_required(&self) -> ::core::result::Result<(), ::aip::RequiredError> {
+            self.#ident.as_option().map_or(::core::result::Result::Ok(()), |resource| {
+                ::aip::FieldBehavior::validate_required_fields(resource, #mask)
+                    .map_err(|error| error.under(::aip::FieldPath::field(#name)))
             })
         }
     }
@@ -268,6 +310,106 @@ fn imply(resource: &Field, mask: &Field) -> TokenStream {
             }
         }
     }
+}
+
+/// `imply_resource_name` for a create (AIP-133), or `None` when the request
+/// leaves its resource for the handler to name.
+///
+/// Emitted when the request has a `<resource field>_id` string beside the
+/// resource and the resource's first pattern ends in a variable: the id, minted
+/// with `new_id` when omitted, fills that variable. A top-level pattern's
+/// literal prefix comes before it (`books/{book}` names `books/<id>`), and a
+/// nested one is put under the request's `parent` and the collection segment
+/// before the variable (`shelves/{shelf}/books/{book}` names
+/// `<parent>/books/<id>`), which needs a `parent` string on the request. The
+/// request's `parent` is copied onto the resource's own `parent` string, when
+/// both have one. The shape is decided here, from the pattern, so the emitted
+/// code only formats.
+fn name(
+    index: &Index,
+    resources: &BTreeMap<String, &Resource>,
+    request: &Message,
+    resource_field: &Field,
+) -> Option<TokenStream> {
+    let id_name = format!("{}_id", resource_field.name);
+    let id = request
+        .fields
+        .iter()
+        .find(|field| plain_string(field, &id_name))?;
+    let resource = resources.get(&resource_field.type_name)?;
+    let binding = resource.message.as_ref()?;
+    let target = index.get(&resource_field.type_name)?;
+    let pattern = resource.patterns.first()?;
+    let (last, before) = pattern.segments.split_last()?;
+    if !last.variable {
+        return None;
+    }
+
+    let request_parent = request
+        .fields
+        .iter()
+        .find(|field| plain_string(field, "parent"));
+    let id_ident = buffa_codegen::idents::make_field_ident(&id.name);
+    let value = if before.iter().any(|segment| segment.variable) {
+        let collection = before.last().filter(|segment| !segment.variable)?;
+        let parent = buffa_codegen::idents::make_field_ident(&request_parent?.name);
+        let format = Literal::string(&format!("{{}}/{}/{{}}", collection.name));
+        quote! { ::std::format!(#format, self.#parent, self.#id_ident) }
+    } else {
+        let prefix: Vec<&str> = before.iter().map(|segment| segment.name.as_str()).collect();
+        let format = if prefix.is_empty() {
+            "{}".to_owned()
+        } else {
+            format!("{}/{{}}", prefix.join("/"))
+        };
+        let format = Literal::string(&format);
+        quote! { ::std::format!(#format, self.#id_ident) }
+    };
+
+    let name_ident = buffa_codegen::idents::make_field_ident(&binding.name_field);
+    let assign_name = if binding.name_field_optional {
+        quote! { resource.#name_ident = ::core::option::Option::Some(#value); }
+    } else {
+        quote! { resource.#name_ident = #value; }
+    };
+    let copy_parent = request_parent
+        .zip(
+            target
+                .fields
+                .iter()
+                .find(|field| plain_string(field, "parent")),
+        )
+        .map(|(from, to)| {
+            let from = buffa_codegen::idents::make_field_ident(&from.name);
+            let to = buffa_codegen::idents::make_field_ident(&to.name);
+            quote! { ::core::clone::Clone::clone_from(&mut resource.#to, &self.#from); }
+        });
+    let resource_ident = buffa_codegen::idents::make_field_ident(&resource_field.name);
+    Some(quote! {
+        fn imply_resource_name(
+            &mut self,
+            new_id: &mut dyn ::core::ops::FnMut() -> ::std::string::String,
+        ) {
+            if let ::core::option::Option::Some(resource) = self.#resource_ident.as_option_mut() {
+                if self.#id_ident.is_empty() {
+                    self.#id_ident = new_id();
+                }
+                #copy_parent
+                #assign_name
+            }
+        }
+    })
+}
+
+/// Whether `field` is a singular `string` without explicit presence named
+/// `name`: what a create's id and `parent` are.
+fn plain_string(field: &Field, name: &str) -> bool {
+    field.name == name
+        && field.kind == Kind::String
+        && !field.repeated
+        && !field.is_map
+        && field.oneof.is_none()
+        && !field.optional
 }
 
 #[cfg(test)]
@@ -370,16 +512,34 @@ mod tests {
     }
 
     #[test]
-    fn a_create_request_gets_only_the_check() {
+    fn a_create_request_without_an_id_gets_only_the_check() {
         let items = emit_for(&request(&["api.proto", "dep.proto"])).expect("both files generated");
         let create = items
             .get(".api.CreateBookRequest")
             .expect("the create request gets items");
         assert_eq!(create.len(), 1);
-        assert!(
-            create[0]
-                .to_string()
-                .contains("missing_required_request_paths")
-        );
+        assert!(create[0].to_string().contains("validate_required"));
+    }
+
+    #[test]
+    fn a_create_request_with_an_id_also_names_its_resource() {
+        let mut request = request(&["api.proto", "dep.proto"]);
+        request.proto_file[1].message_type[0]
+            .field
+            .push(FieldDescriptorProto {
+                name: Some("book_id".to_owned()),
+                number: Some(2),
+                r#type: Some(Type::TYPE_STRING),
+                label: Some(Label::LABEL_OPTIONAL),
+                ..Default::default()
+            });
+        let items = emit_for(&request).expect("both files generated");
+        let create = items
+            .get(".api.CreateBookRequest")
+            .expect("the create request gets items");
+        assert_eq!(create.len(), 2);
+        let name = create[1].to_string();
+        assert!(name.contains("imply_resource_name"));
+        assert!(name.contains("\"books/{}\""));
     }
 }
