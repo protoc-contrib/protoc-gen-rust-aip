@@ -2,6 +2,7 @@
 //! as an `Option<T>`. That this file compiles is most of the test: each
 //! accessor below reads an `Option<String>` a proto3 file has as a `String`.
 
+use aip::FieldBehavior;
 use aip_fixture::proto::example::v1::{CreateGadgetRequest, Gadget, ListGadgetsRequest};
 
 const ID: &str = "0190b8c6-6f6a-7d6e-9a3b-0c1d2e3f4a5b";
@@ -121,6 +122,6 @@ fn a_changed_optional_immutable_field_is_reported() {
         model: Some("m2".to_owned()),
         ..Default::default()
     };
-    assert_eq!(update.immutable_changes(&stored), ["model"]);
-    assert!(Lamp::default().immutable_changes(&stored).is_empty());
+    assert_eq!(update.changed_immutable_paths(&stored), ["model"]);
+    assert!(Lamp::default().changed_immutable_paths(&stored).is_empty());
 }

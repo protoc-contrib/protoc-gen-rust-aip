@@ -1,5 +1,8 @@
-//! Emits `MUTABLE_PATHS` — which fields of a resource an update may write —
-//! and `implied_update_mask`, the mask AIP-134 implies when a client omits one.
+//! Emits a resource's `aip::FieldBehavior` items: `MUTABLE_PATHS` — which
+//! fields an update may write — and `implied_update_mask`, the mask AIP-134
+//! implies when a client omits one, along with the two AIP-203 checks an update
+//! or create needs: `changed_immutable_paths` and `missing_required_paths`.
+//! Their semantics are documented on the trait, in aip-rs.
 //!
 //! Read off `google.api.field_behavior` — everything not `OUTPUT_ONLY`,
 //! `IDENTIFIER` or `IMMUTABLE`. The three are one question, not three: the
@@ -35,15 +38,25 @@
 //! without anyone remembering to.
 //!
 //! Which leaves the `field_mask.in` annotation as a restatement of what
-//! `field_behavior` already says. Keeping the two in step is a lint's job — the
-//! same lint the `REQUIRED` case needs, for the same reason.
+//! `field_behavior` already says. Keeping the two in step is a lint's job.
+//!
+//! # `REQUIRED` is checked here, not by protovalidate
+//!
+//! A resource message is shared by its create and update requests, and a
+//! `REQUIRED` field means something different in each: a create must set it,
+//! an update may omit it unless its mask names it. A rule on the resource
+//! cannot tell which request it is in, so protovalidate can only enforce it
+//! through a CEL rule restated on every request. `missing_required_paths` reads
+//! the annotation instead, with the mask the request carries.
 //!
 //! See <https://google.aip.dev/134#field-masks>.
 
+use std::collections::BTreeMap;
+
+use anyhow::{Result, bail};
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use super::{doc, short_name};
 use crate::messages::{Field, Index, Kind, Message};
 use crate::scan::{Registry, Resource};
 
@@ -57,52 +70,59 @@ fn writable(field: &Field) -> bool {
 /// Per resource, not per update request: which of a resource's fields are
 /// writable is a fact about the resource, and a schema may reach it through
 /// more than one request or none yet.
-#[must_use]
-pub fn emit_file(file: &str, index: &Index, registry: &Registry) -> TokenStream {
-    let blocks: Vec<TokenStream> = registry
-        .by_file(file)
-        .filter_map(|resource| emit_resource(file, index, resource))
-        .collect();
-    quote! { #( #blocks )* }
+///
+/// # Errors
+///
+/// If a `REQUIRED` field `missing_required_paths` has to check sits in a oneof
+/// of a message from another package, whose enum the emitted code cannot name.
+pub fn emit_file(
+    file: &str,
+    index: &Index,
+    registry: &Registry,
+) -> Result<BTreeMap<String, Vec<TokenStream>>> {
+    let mut items = BTreeMap::new();
+    for resource in registry.by_file(file) {
+        if let Some((fqn, resource_items)) = emit_resource(file, index, resource)? {
+            items.insert(fqn, resource_items);
+        }
+    }
+    Ok(items)
 }
 
-/// `MUTABLE_PATHS` for one resource, when it is declared on a message.
+/// The `FieldBehavior` items for one resource, when it is declared on a
+/// message, keyed by the message's fully-qualified name -- only those that
+/// differ from the trait's "nothing to do" defaults.
 ///
-/// A file-scope `resource_definition` has no message to hang it off, and no
+/// A file-scope `resource_definition` has no message to hang them off, and no
 /// fields to read a behaviour from, so it gets nothing.
-fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<TokenStream> {
-    let binding = resource.message.as_ref()?;
-    let message = index
+fn emit_resource(
+    file: &str,
+    index: &Index,
+    resource: &Resource,
+) -> Result<Option<(String, Vec<TokenStream>)>> {
+    let Some(binding) = resource.message.as_ref() else {
+        return Ok(None);
+    };
+    let Some(message) = index
         .in_file(file)
-        .find(|message| message.rust_path == binding.rust_path)?;
+        .find(|message| message.rust_path == binding.rust_path)
+    else {
+        return Ok(None);
+    };
 
-    let path: TokenStream = binding
-        .rust_path
-        .parse()
-        .expect("a message path built from proto identifiers is a valid Rust path");
+    let mut items = Vec::new();
+
     let literals: Vec<Literal> = message
         .fields
         .iter()
         .filter(|field| writable(field))
         .map(|field| Literal::string(&field.name))
         .collect();
-
-    let short = short_name(&message.fqn);
-    let paths_doc = doc(&format!(
-        "The field paths an update may write on `{short}`.\n\n\
-         Every field not annotated `OUTPUT_ONLY`, `IDENTIFIER` or \
-         `IMMUTABLE`.\n\n\
-         This is the *expansion* of the `*` mask, full replacement, which \
-         AIP-134 reads as every writable field; an omitted mask is narrower — see \
-         [`implied_update_mask`](Self::implied_update_mask). It is not the check \
-         that a mask \
-         names only these -- that is `(buf.validate.field).field_mask.in` on the \
-         mask itself, which protovalidate runs along with every other rule on \
-         the request.\n\n\
-         Those two lists say the same thing and are kept in step by hand. A \
-         schema that adds a writable field and forgets the annotation gets a \
-         field this constant expands to and protovalidate then rejects.",
-    ));
+    if !literals.is_empty() {
+        items.push(quote! {
+            const MUTABLE_PATHS: &'static [&'static str] = &[#( #literals ),*];
+        });
+    }
 
     let checks: Vec<TokenStream> = message
         .fields
@@ -115,7 +135,7 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
             if field.required {
                 return quote! { paths.push(#name); };
             }
-            let populated = populated(message, field);
+            let populated = populated(&quote! { self }, message, field);
             quote! {
                 if #populated {
                     paths.push(#name);
@@ -123,80 +143,284 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
             }
         })
         .collect();
-    let implied_doc = doc(&format!(
-        "The update mask AIP-134 implies when a client omits one: every field \
-         of [`MUTABLE_PATHS`](Self::MUTABLE_PATHS) this `{short}` populates, in \
-         declaration order.\n\n\
-         Populated as protobuf reads presence: a field with explicit presence — \
-         `optional`, a message, a oneof member — when set, even to its zero \
-         value; any other scalar when not its zero value; a repeated field or a \
-         map when not empty.\n\n\
-         Reads `self` and returns the paths; store them on the request's \
-         `update_mask` when it is empty.\n\n\
-         See <https://google.aip.dev/134#field-masks>.",
-    ));
-
-    let immutable_fn = immutable_changes_fn(message);
-    let implied_body = empty_or("paths", &checks);
-    let immutable_doc = doc(&format!(
-        "The `IMMUTABLE` fields of `{short}` this update sets to a value other \
-         than `existing`'s, in declaration order.\n\n\
-         AIP-203: a service rejects a request that changes an immutable field. \
-         An update that echoes the stored value back, or leaves the field \
-         unset, changes nothing and is not reported. Neither the implied mask \
-         nor `MUTABLE_PATHS` ever writes one, so without this check a changed \
-         value would be dropped silently rather than refused.\n\n\
-         ```text\n\
-         let changed = update.immutable_changes(&stored);\n\
-         if !changed.is_empty() {{ /* InvalidArgument */ }}\n\
-         ```",
-    ));
-
-    Some(quote! {
-        impl #path {
-            #paths_doc
-            pub const MUTABLE_PATHS: &'static [&'static str] = &[#( #literals ),*];
-
-            #immutable_doc
-            #[must_use]
-            #immutable_fn
-
-            #implied_doc
-            #[must_use]
-            pub fn implied_update_mask(&self) -> ::std::vec::Vec<&'static str> {
-                #implied_body
+    if !checks.is_empty() {
+        let body = collect_into("paths", &checks);
+        items.push(quote! {
+            fn implied_update_mask(&self) -> ::std::vec::Vec<&'static str> {
+                #body
             }
-        }
-    })
+        });
+    }
+
+    let immutable = immutable_checks(message);
+    if !immutable.is_empty() {
+        let body = collect_into("changed", &immutable);
+        items.push(quote! {
+            fn changed_immutable_paths(&self, existing: &Self) -> ::std::vec::Vec<&'static str> {
+                #body
+            }
+        });
+    }
+
+    if let Some(required) = missing_required_paths_fn(index, message)? {
+        items.push(required);
+    }
+
+    Ok(Some((message.fqn.clone(), items)))
 }
 
-/// `immutable_changes`, whose body is empty when `message` has no field to
-/// check -- where a read `existing` would be an unused-variable warning in every
-/// consumer.
-fn immutable_changes_fn(message: &Message) -> TokenStream {
-    let checks = immutable_checks(message);
-    if checks.is_empty() {
-        return quote! {
-            pub fn immutable_changes(&self, _existing: &Self) -> ::std::vec::Vec<&'static str> {
-                ::std::vec::Vec::new()
+/// What [`required_checks`] found to emit for one message.
+#[derive(Default)]
+struct Required {
+    statements: Vec<TokenStream>,
+    /// Whether any statement descends into a nested message, which needs the
+    /// `reaches` closure as well as `covered`.
+    descends: bool,
+}
+
+/// `missing_required_paths`, or `None` when nothing beneath `resource` is
+/// `REQUIRED` and the trait's default already answers.
+fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<Option<TokenStream>> {
+    let mut seen = vec![resource.fqn.clone()];
+    let required = required_checks(
+        index,
+        &resource.package,
+        resource,
+        &quote! { self },
+        "",
+        &mut seen,
+    )?;
+    if required.statements.is_empty() {
+        return Ok(None);
+    }
+
+    // A path is covered when the mask names it or a message above it -- the
+    // update writes it then -- and reached when it is covered or the mask
+    // names something beneath it, which is when a nested message is worth
+    // entering.
+    let reaches = if required.descends {
+        quote! {
+            let reaches = |path: &str| {
+                covered(path)
+                    || mask.is_some_and(|paths| {
+                        paths.iter().any(|named| {
+                            named.strip_prefix(path).is_some_and(|rest| rest.starts_with('.'))
+                        })
+                    })
+            };
+        }
+    } else {
+        TokenStream::new()
+    };
+    let statements = required.statements;
+    Ok(Some(quote! {
+        #[allow(
+            clippy::collapsible_if,
+            reason = "collapsing a test and a binding takes a let chain, which needs edition 2024"
+        )]
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one statement per REQUIRED path, spelled out at generation time"
+        )]
+        fn missing_required_paths(
+            &self,
+            mask: ::core::option::Option<&[::std::string::String]>,
+        ) -> ::std::vec::Vec<&'static str> {
+            let covered = |path: &str| {
+                mask.is_none_or(|paths| {
+                    paths.iter().any(|named| {
+                        named == path
+                            || path
+                                .strip_prefix(named.as_str())
+                                .is_some_and(|rest| rest.starts_with('.'))
+                    })
+                })
+            };
+            #reaches
+            let mut missing = ::std::vec::Vec::new();
+            #( #statements )*
+            missing
+        }
+    }))
+}
+
+/// The statements checking the `REQUIRED` fields of `message`, read through
+/// `receiver`, whose paths start with `prefix`, and descending into every set
+/// singular message that has some beneath it.
+///
+/// Paths are spelled out at generation time, so each is a `&'static str`. That
+/// is why a message type already on the way down (`seen`) is not entered
+/// again: a recursive type would otherwise never stop expanding.
+fn required_checks(
+    index: &Index,
+    package: &str,
+    message: &Message,
+    receiver: &TokenStream,
+    prefix: &str,
+    seen: &mut Vec<String>,
+) -> Result<Required> {
+    let mut required = Required::default();
+    for field in &message.fields {
+        let path = format!("{prefix}{}", field.name);
+        let literal = Literal::string(&path);
+
+        // proto2 `required` is set on every message that parsed.
+        if field.must_set && !field.required {
+            check_oneof_reachable(package, message, field)?;
+            let unset = unset(receiver, message, field);
+            required.statements.push(quote! {
+                if covered(#literal) && #unset {
+                    missing.push(#literal);
+                }
+            });
+        }
+
+        if field.kind != Kind::Message || field.repeated || field.is_map {
+            continue;
+        }
+        let Some(nested) = index.get(&field.type_name) else {
+            continue;
+        };
+        if seen.contains(&nested.fqn) {
+            continue;
+        }
+        seen.push(nested.fqn.clone());
+        let inner = required_checks(
+            index,
+            package,
+            nested,
+            &quote! { value },
+            &format!("{path}."),
+            seen,
+        )?;
+        seen.pop();
+        if inner.statements.is_empty() {
+            continue;
+        }
+
+        check_oneof_reachable(package, message, field)?;
+        let ident = buffa_codegen::idents::make_field_ident(&field.name);
+        let statements = inner.statements;
+        // Unset, the message is read as empty when the mask names only paths
+        // beneath it: the update writes those, so it would clear them. Named
+        // whole -- or on a create -- an unset message is not entered, since a
+        // nested message's annotations apply only when it is set.
+        seen.push(nested.fqn.clone());
+        let empty = unset_checks(index, nested, &format!("{path}."), seen);
+        seen.pop();
+        let otherwise = if empty.is_empty() {
+            TokenStream::new()
+        } else {
+            quote! {
+                else if !covered(#literal) {
+                    #( #empty )*
+                }
             }
         };
+        let entered = if let Some(oneof) = &field.oneof {
+            let oneof_ident = buffa_codegen::idents::make_field_ident(oneof);
+            let enum_path: TokenStream = format!(
+                "{}::{}",
+                message.oneof_module,
+                buffa_codegen::idents::to_upper_camel_case(oneof),
+            )
+            .parse()
+            .expect("a oneof path built from proto identifiers is a valid Rust path");
+            let variant = format_ident!(
+                "{}",
+                buffa_codegen::idents::to_upper_camel_case(&field.name)
+            );
+            quote! {
+                if let ::core::option::Option::Some(#enum_path::#variant(value)) = &#receiver.#oneof_ident {
+                    #( #statements )*
+                } #otherwise
+            }
+        } else {
+            quote! {
+                if let ::core::option::Option::Some(value) = #receiver.#ident.as_option() {
+                    #( #statements )*
+                } #otherwise
+            }
+        };
+        required.statements.push(quote! {
+            if reaches(#literal) {
+                #entered
+            }
+        });
+        required.descends = true;
     }
-    let body = empty_or("changed", &checks);
-    quote! {
-        pub fn immutable_changes(&self, existing: &Self) -> ::std::vec::Vec<&'static str> {
-            #body
-        }
-    }
+    Ok(required)
 }
 
-/// A body collecting `statements`' pushes into a vector named `name`, or an
-/// empty vector outright when there are none -- a `mut` binding nothing pushes
-/// to would be an unused-mut warning in every consumer.
-fn empty_or(name: &str, statements: &[TokenStream]) -> TokenStream {
-    if statements.is_empty() {
-        return quote! { ::std::vec::Vec::new() };
+/// The statements checking the `REQUIRED` fields of an *unset* `message`,
+/// whose paths start with `prefix`: the [`required_checks`] an empty message
+/// would get, decided here rather than by reading one. In an empty message
+/// every `REQUIRED` field is unset -- the proto2 label included, which only
+/// a message that parsed is sure to carry -- so each is missing wherever the
+/// mask covers it, and a message beneath is again entered only when the mask
+/// names paths beneath it alone. Nothing is read, so a oneof member needs no
+/// enum path, and no message type has to be named to build an empty one.
+fn unset_checks(
+    index: &Index,
+    message: &Message,
+    prefix: &str,
+    seen: &mut Vec<String>,
+) -> Vec<TokenStream> {
+    let mut statements = Vec::new();
+    for field in &message.fields {
+        let path = format!("{prefix}{}", field.name);
+        let literal = Literal::string(&path);
+        if field.must_set {
+            statements.push(quote! {
+                if covered(#literal) {
+                    missing.push(#literal);
+                }
+            });
+        }
+        if field.kind != Kind::Message || field.repeated || field.is_map {
+            continue;
+        }
+        let Some(nested) = index.get(&field.type_name) else {
+            continue;
+        };
+        if seen.contains(&nested.fqn) {
+            continue;
+        }
+        seen.push(nested.fqn.clone());
+        let inner = unset_checks(index, nested, &format!("{path}."), seen);
+        seen.pop();
+        if !inner.is_empty() {
+            statements.push(quote! {
+                if !covered(#literal) && reaches(#literal) {
+                    #( #inner )*
+                }
+            });
+        }
     }
+    statements
+}
+
+/// Fails if `field` is a oneof member of a message outside `package` that
+/// `missing_required_paths` has to read: the emitted check names the oneof's
+/// enum by its path within the package, which does not reach another
+/// package's.
+fn check_oneof_reachable(package: &str, message: &Message, field: &Field) -> Result<()> {
+    if field.oneof.is_some() && message.package != package {
+        bail!(
+            "{}.{}: missing_required_paths for a resource in {package} has to read this oneof \
+             member, but its enum belongs to {}, which the emitted code cannot name; drop \
+             REQUIRED from it and from everything beneath it, or move the message into \
+             {package}",
+            message.fqn.trim_start_matches('.'),
+            field.name,
+            message.package,
+        );
+    }
+    Ok(())
+}
+
+/// A body collecting `statements`' pushes into a vector named `name`.
+fn collect_into(name: &str, statements: &[TokenStream]) -> TokenStream {
     let name = format_ident!("{name}");
     quote! {
         let mut #name = ::std::vec::Vec::new();
@@ -219,12 +443,29 @@ fn immutable_checks(message: &Message) -> Vec<TokenStream> {
             let set = if field.required {
                 quote! { true }
             } else {
-                populated(message, field)
+                populated(&quote! { self }, message, field)
             };
             // By bit pattern for a float, as `populated` reads one, so `-0.0`
             // and `NaN` compare the way protobuf-go's `proto.Equal` does not
             // need to be argued about.
             let differs = match (field.kind, field.optional) {
+                // The service does not keep the order, so neither does the
+                // comparison: equal when every element is matched by one of
+                // the stored list's, each used once.
+                _ if field.unordered_list && field.repeated && !field.is_map => quote! {
+                    {
+                        let (update, stored) = (&self.#ident, &existing.#ident);
+                        let mut taken = ::std::vec![false; stored.len()];
+                        update.len() != stored.len()
+                            || !update.iter().all(|element| {
+                                stored.iter().zip(taken.iter_mut()).any(|(candidate, taken)| {
+                                    let matched = !*taken && candidate == element;
+                                    *taken |= matched;
+                                    matched
+                                })
+                            })
+                    }
+                },
                 (Kind::Double, false) => {
                     quote! { self.#ident.to_bits() != existing.#ident.to_bits() }
                 }
@@ -249,9 +490,36 @@ fn immutable_checks(message: &Message) -> Vec<TokenStream> {
         .collect()
 }
 
-/// An expression that is true when `field` is populated on `self`, the way
-/// protobuf reads presence — protobuf-go's `Has`.
-fn populated(message: &Message, field: &Field) -> TokenStream {
+/// An expression that is true when `field` is *not* populated on `receiver` --
+/// [`populated`] negated, spelled so no consumer's clippy sees a `!` it could
+/// simplify.
+fn unset(receiver: &TokenStream, message: &Message, field: &Field) -> TokenStream {
+    let ident = buffa_codegen::idents::make_field_ident(&field.name);
+    if field.oneof.is_some() {
+        let populated = populated(receiver, message, field);
+        return quote! { !#populated };
+    }
+    if field.repeated || field.is_map {
+        return quote! { #receiver.#ident.is_empty() };
+    }
+    if field.optional {
+        return quote! { #receiver.#ident.is_none() };
+    }
+    match field.kind {
+        Kind::Message => quote! { #receiver.#ident.as_option().is_none() },
+        Kind::Double => quote! { #receiver.#ident.to_bits() == 0 },
+        Kind::String | Kind::Bytes => quote! { #receiver.#ident.is_empty() },
+        Kind::Bool => quote! { !#receiver.#ident },
+        Kind::Integer => quote! { #receiver.#ident == 0 },
+        Kind::Enum => quote! { #receiver.#ident.to_i32() == 0 },
+    }
+}
+
+/// An expression that is true when `field` is populated on `receiver`, the way
+/// protobuf reads presence — protobuf-go's `Has`. `receiver` is `self` or a
+/// binding to a nested `message`; a oneof member names `message`'s enum by its
+/// path within the package, so a nested message must share the package.
+fn populated(receiver: &TokenStream, message: &Message, field: &Field) -> TokenStream {
     let ident = buffa_codegen::idents::make_field_ident(&field.name);
     if let Some(oneof) = &field.oneof {
         // Members share one `Option<Enum>`; this one is populated when it is
@@ -269,24 +537,118 @@ fn populated(message: &Message, field: &Field) -> TokenStream {
             buffa_codegen::idents::to_upper_camel_case(&field.name)
         );
         return quote! {
-            ::core::matches!(self.#oneof_ident, ::core::option::Option::Some(#enum_path::#variant(_)))
+            ::core::matches!(#receiver.#oneof_ident, ::core::option::Option::Some(#enum_path::#variant(_)))
         };
     }
     if field.repeated || field.is_map {
-        return quote! { !self.#ident.is_empty() };
+        return quote! { !#receiver.#ident.is_empty() };
     }
     if field.optional {
-        return quote! { self.#ident.is_some() };
+        return quote! { #receiver.#ident.is_some() };
     }
     match field.kind {
-        Kind::Message => quote! { self.#ident.as_option().is_some() },
+        Kind::Message => quote! { #receiver.#ident.as_option().is_some() },
         // By bit pattern, as protobuf-go does: `-0.0` is not the zero value.
-        Kind::Double => quote! { self.#ident.to_bits() != 0 },
+        Kind::Double => quote! { #receiver.#ident.to_bits() != 0 },
         // Any other scalar is populated when it is not its zero value.
-        Kind::String | Kind::Bytes => quote! { !self.#ident.is_empty() },
-        Kind::Bool => quote! { self.#ident },
-        Kind::Integer => quote! { self.#ident != 0 },
+        Kind::String | Kind::Bytes => quote! { !#receiver.#ident.is_empty() },
+        Kind::Bool => quote! { #receiver.#ident },
+        Kind::Integer => quote! { #receiver.#ident != 0 },
         // `to_i32`, so an unknown value received on the wire counts too.
-        Kind::Enum => quote! { self.#ident.to_i32() != 0 },
+        Kind::Enum => quote! { #receiver.#ident.to_i32() != 0 },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use buffa::ExtensionSet;
+    use buffa_codegen::generated::{
+        compiler::CodeGeneratorRequest,
+        descriptor::{
+            DescriptorProto, FieldDescriptorProto, FieldOptions, FileDescriptorProto,
+            OneofDescriptorProto,
+            field_descriptor_proto::{Label, Type},
+        },
+    };
+
+    use super::*;
+    use crate::annotations::google::api::{FIELD_BEHAVIOR, FieldBehavior};
+
+    /// `dep.proto` declares `dep.Payment`, whose oneof `method` has a member
+    /// `card`; `api.proto` declares `api.Order` holding one. `card` is
+    /// `REQUIRED` when `required_member` is set.
+    fn index(required_member: bool) -> Index {
+        let mut options = FieldOptions::default();
+        if required_member {
+            options.set_extension(&FIELD_BEHAVIOR, vec![FieldBehavior::REQUIRED as i32]);
+        }
+        let payment = FileDescriptorProto {
+            name: Some("dep.proto".to_owned()),
+            package: Some("dep".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![DescriptorProto {
+                name: Some("Payment".to_owned()),
+                field: vec![FieldDescriptorProto {
+                    name: Some("card".to_owned()),
+                    number: Some(1),
+                    r#type: Some(Type::TYPE_STRING),
+                    label: Some(Label::LABEL_OPTIONAL),
+                    oneof_index: Some(0),
+                    options: options.into(),
+                    ..Default::default()
+                }],
+                oneof_decl: vec![OneofDescriptorProto {
+                    name: Some("method".to_owned()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let order = FileDescriptorProto {
+            name: Some("api.proto".to_owned()),
+            package: Some("api".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![DescriptorProto {
+                name: Some("Order".to_owned()),
+                field: vec![FieldDescriptorProto {
+                    name: Some("payment".to_owned()),
+                    number: Some(1),
+                    r#type: Some(Type::TYPE_MESSAGE),
+                    type_name: Some(".dep.Payment".to_owned()),
+                    label: Some(Label::LABEL_OPTIONAL),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        crate::messages::gather(&CodeGeneratorRequest {
+            file_to_generate: vec!["api.proto".to_owned()],
+            proto_file: vec![payment, order],
+            ..Default::default()
+        })
+    }
+
+    fn missing_required_paths_for(index: &Index) -> Result<Option<TokenStream>> {
+        let order = index.get(".api.Order").expect("api.Order is indexed");
+        missing_required_paths_fn(index, order)
+    }
+
+    #[test]
+    fn a_required_oneof_member_in_another_package_fails_generation() {
+        let error = missing_required_paths_for(&index(true))
+            .expect_err("a oneof the emitted code cannot name");
+        assert_eq!(
+            error.to_string(),
+            "dep.Payment.card: missing_required_paths for a resource in api has to read this \
+             oneof member, but its enum belongs to dep, which the emitted code cannot name; drop \
+             REQUIRED from it and from everything beneath it, or move the message into api"
+        );
+    }
+
+    #[test]
+    fn a_oneof_in_another_package_with_nothing_required_is_fine() {
+        assert!(missing_required_paths_for(&index(false)).is_ok());
     }
 }

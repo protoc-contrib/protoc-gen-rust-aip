@@ -1,4 +1,4 @@
-// Fixture for the AIP-203 OUTPUT_ONLY clearing walk, and for MUTABLE_PATHS,
+// Fixture for the AIP-203 clearing walks and checks, and for MUTABLE_PATHS,
 // which reads the same annotations the other way round.
 //
 // Covers every shape the walk has to reach: a scalar, a message, a repeated
@@ -101,4 +101,71 @@ message Meter {
 enum Unit {
   UNIT_UNSPECIFIED = 0;
   UNIT_LITRE = 1;
+}
+
+// A resource for `missing_required_paths`, `clear_input_only` and the
+// UNORDERED_LIST comparison in `changed_immutable_paths`: REQUIRED fields of
+// every shape the check reads, nested ones it has to descend into, and one it
+// must not.
+message Order {
+  option (google.api.resource) = {
+    type: "example.com/Order"
+    pattern: "orders/{order}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  // Implicit presence: unset is the zero value, so a REQUIRED bool must be
+  // true.
+  string title = 2 [(google.api.field_behavior) = REQUIRED];
+  bool confirmed = 3 [(google.api.field_behavior) = REQUIRED];
+  // Explicit presence: set to zero still counts.
+  optional int32 quantity = 4 [(google.api.field_behavior) = REQUIRED];
+
+  // A REQUIRED message, with REQUIRED fields of its own and two levels down.
+  Destination destination = 5 [(google.api.field_behavior) = REQUIRED];
+  // Not REQUIRED itself; its own REQUIRED fields apply only when it is set.
+  Destination billing = 6;
+  // Repeated: present when not empty, and never descended into.
+  repeated Destination stops = 7 [(google.api.field_behavior) = REQUIRED];
+
+  // A oneof member that is a message is descended into when it is the one set.
+  oneof payment {
+    string card = 8;
+    Voucher voucher = 9;
+  }
+
+  // A message that contains itself, entered once per path.
+  Node root = 10;
+
+  // IMMUTABLE lists: the service keeps one's order and not the other's.
+  repeated string legs = 11 [(google.api.field_behavior) = IMMUTABLE];
+  repeated string tags = 12 [
+    (google.api.field_behavior) = IMMUTABLE,
+    (google.api.field_behavior) = UNORDERED_LIST
+  ];
+
+  // Accepted on input, never returned.
+  string coupon = 13 [(google.api.field_behavior) = INPUT_ONLY];
+}
+
+message Destination {
+  string city = 1 [(google.api.field_behavior) = REQUIRED];
+  string line2 = 2;
+  Geo geo = 3;
+  // INPUT_ONLY beneath the resource, so clear_input_only has to descend.
+  string access_code = 4 [(google.api.field_behavior) = INPUT_ONLY];
+}
+
+message Geo {
+  double latitude = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message Voucher {
+  string code = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message Node {
+  string label = 1 [(google.api.field_behavior) = REQUIRED];
+  Node child = 2;
 }

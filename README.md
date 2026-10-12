@@ -24,12 +24,14 @@ Every pass is implemented.
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or `None` for the server to mint one |
-| `MUTABLE_PATHS`, `implied_update_mask`, `immutable_changes` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, and the `IMMUTABLE` fields an update tries to change |
-| `OUTPUT_ONLY` clearing walk | recursive through singular, repeated, map and oneof fields |
+| `impl aip::FieldBehavior`: `MUTABLE_PATHS`, `implied_update_mask`, `changed_immutable_paths`, `missing_required_paths` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, the `IMMUTABLE` fields an update tries to change, and the `REQUIRED` fields a create or update leaves unset |
+| `impl aip::FieldBehavior`: `clear_output_only`, `clear_input_only` | AIP-203 clearing walks, recursive through singular, repeated, map and oneof fields |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 
-`REQUIRED` is **not** generated, deliberately — see [Field
-behavior](#field-behavior-clearing-is-generated-validating-is-protovalidates).
+`REQUIRED` on a resource's fields is checked by `missing_required_paths`, not
+protovalidate, because the resource is shared by its create and update requests
+and protovalidate cannot tell which one it is in — see [Field
+behavior](#field-behavior-required-is-checked-here-value-rules-are-protovalidates).
 
 `order_by` and `page_token` are **not** generated: see [List
 queries](#list-queries-filter-gets-an-environment-ordering-and-paging-are-the-query-layers).
@@ -115,19 +117,53 @@ On each resource, which of its fields an update may write — everything not
 three: the server owns it, it selects the target rather than being part of it,
 or it was settable once, on create.
 
+These, and the clearing walks below, are one trait,
+[`aip::FieldBehavior`](https://github.com/protoc-contrib/aip-rs), which the
+plugin implements for every message with any of these behaviors at some depth:
+
 ```rust
-impl Shipment {
-    pub const MUTABLE_PATHS: &'static [&'static str];
-    pub fn implied_update_mask(&self) -> Vec<&'static str>;
-    pub fn immutable_changes(&self, existing: &Self) -> Vec<&'static str>;
+impl aip::FieldBehavior for Shipment {
+    const MUTABLE_PATHS: &'static [&'static str] = &["reference", /* ... */];
+    fn implied_update_mask(&self) -> Vec<&'static str> { /* ... */ }
+    fn changed_immutable_paths(&self, existing: &Self) -> Vec<&'static str> { /* ... */ }
+    fn missing_required_paths(&self, mask: Option<&[String]>) -> Vec<&'static str> { /* ... */ }
+    fn clear_output_only(&mut self) { /* ... */ }
+    fn clear_input_only(&mut self) { /* ... */ }
 }
 ```
 
-`immutable_changes` is AIP-203's half: the `IMMUTABLE` fields an update sets to
-something other than the stored value. Neither expansion ever writes one, so
-without it a changed value would be dropped silently rather than refused; an
-echoed-back value, or an unset one, is not reported. aip-go's
-`ImmutableChanges` answers the same.
+An impl holds only the items its message needs; every other item is the
+trait's default, the "nothing to do" answer — no writable paths, nothing
+missing, nothing changed, nothing to clear. So one server layer over
+`T: aip::FieldBehavior` handles every generated message alike, and a message
+that only needs a clearing walk (a request, or a message nested in a resource)
+still answers every item. The semantics of each item are documented on the
+trait, in aip-rs.
+
+Bring the trait into scope where its items are called, as for any trait;
+`Shipment::MUTABLE_PATHS` and `Shipment::implied_update_mask` still work as
+paths once it is:
+
+```rust
+use aip::FieldBehavior;
+
+let paths = Shipment::MUTABLE_PATHS;
+let implied = shipment.implied_update_mask();
+```
+
+The trait is not dyn-compatible — an associated constant, a method taking
+`&Self` — so generic code takes `T: FieldBehavior`, not `dyn FieldBehavior`.
+
+`changed_immutable_paths` is AIP-203's `IMMUTABLE` half: the fields an update
+sets to something other than the stored value. Neither expansion ever writes
+one, so without it a changed value would be dropped silently rather than
+refused; an echoed-back value, or an unset one, is not reported. A repeated
+field that is also `UNORDERED_LIST` is compared ignoring order, as a multiset,
+since the service does not promise to keep it. aip-go's `ChangedImmutablePaths`
+answers the same.
+
+`missing_required_paths` is the `REQUIRED` half; see [Field
+behavior](#field-behavior-required-is-checked-here-value-rules-are-protovalidates).
 
 **Stricter than AIP-161, on purpose.** AIP-161 has a mask naming an
 `OUTPUT_ONLY` field ignored; here `field_mask.in` rejects it, which is the
@@ -184,8 +220,7 @@ Deriving both from the schema is the point — a new writable field joins them
 without anyone remembering to.
 
 Which leaves the `field_mask.in` annotation restating what `field_behavior`
-already says. Keeping the two in step is a **lint's** job, the same one the
-`REQUIRED` case needs and for the same reason.
+already says. Keeping the two in step is a **lint's** job.
 
 ### Create IDs, per AIP-133
 
@@ -218,14 +253,20 @@ call site handles one error type either way.
 Needs no `uuid` feature beyond its defaults: the generated code only parses.
 A server needs whichever minting feature it calls — `v7` for `now_v7`.
 
-### Field behavior: clearing is generated, validating is protovalidate's
+### Field behavior: `REQUIRED` is checked here, value rules are protovalidate's
 
-The walk reaches only messages this run generates. A generated message holding
-one from a file that is *not* generated, with `OUTPUT_ONLY` fields beneath it,
-fails generation, naming both — those fields could not be cleared, and an
-implied mask naming the holding field would store them. Generate that file too.
+Two walks clear what one side may not see: `clear_output_only` drops
+server-owned values from an inbound request, and `clear_input_only` drops
+values a client may send but must never get back from an outbound response.
+Each is emitted only for messages with such a field at some depth.
 
-The OUTPUT_ONLY walk is generated, not reflective — and not as an
+A walk reaches only messages this run generates. A generated message holding
+one from a file that is *not* generated, with `OUTPUT_ONLY` (or `INPUT_ONLY`)
+fields beneath it, fails generation, naming both — those fields could not be
+cleared, and for `OUTPUT_ONLY` an implied mask naming the holding field would
+store them. Generate that file too.
+
+The walks are generated, not reflective — and not as an
 optimisation. buffa 0.9 has **no reflective path to mutation in any mode**:
 `Reflectable` exposes only `reflect(&self)`, and the source marks
 `reflect_mut` as designed but deferred to the MergeSink work.
@@ -233,9 +274,8 @@ optimisation. buffa 0.9 has **no reflective path to mutation in any mode**:
 `&mut dyn ReflectMessage` that nothing produces.
 
 ```rust
-impl Shipment {
-    /// Clears every field annotated `OUTPUT_ONLY`, at any depth.
-    pub fn clear_output_only(&mut self) {
+impl aip::FieldBehavior for Shipment {
+    fn clear_output_only(&mut self) {
         self.tracking_id = Default::default();
         for item in &mut self.parcels { item.clear_output_only(); }
         // ...
@@ -247,29 +287,73 @@ The walk is recursive, through singular, repeated and map-valued messages. A
 message with nothing output-only beneath it gets no walk at all and is never
 descended into. A `oneof` is cleared entirely when the member that is set is
 the output-only one, since there is no individual field to assign to.
+`clear_input_only` is the same walk for `INPUT_ONLY`.
 
 Revisit the split if a buffa release lands `reflect_mut`.
 
-**`REQUIRED` is not generated here, and should not be.** A schema that marks a
-field `(google.api.field_behavior) = REQUIRED` almost always also constrains it
-with `(buf.validate.field).required` — or a `min_len`, for a presence-less
-scalar — and a server running protovalidate already enforces that. A second
-check generated from the AIP annotation could only drift out of agreement with
-the one that actually runs, which is the same argument this plugin makes
-against [generating `order_by` and `page_token`
-parsers](#list-queries-filter-gets-an-environment-ordering-and-paging-are-the-query-layers).
+**`REQUIRED` on a resource is checked here, not by protovalidate.** AIP-203
+gives a `REQUIRED` resource field two meanings: a create must set it, and a
+partial update may omit it unless its mask names it — then it must be set, or
+the update would clear it. A resource message is shared by both requests, and a
+`buf.validate` rule on it cannot tell which one it is in. Marking the field
+`(buf.validate.field).required` breaks every partial update that leaves it out;
+the workaround is a CEL rule restated on each create and update request, which
+is a second, hand-written copy of what `field_behavior` already says and which
+no lint can practically keep in step.
 
-What *is* worth having is a lint that the two annotations agree: a field marked
-REQUIRED with nothing in `buf.validate` enforcing it is a field the schema
-claims is required and no server checks. That belongs in
-[protoc-gen-aip-lint](https://github.com/protoc-contrib/protoc-gen-aip-lint),
-not here — a linter reports, a generator emits.
+So the split is by what protovalidate can see:
 
-The presence rule such a lint has to respect, carried over from aip-go because
-it was a bug there first: a field with presence — a message, an `optional`
-scalar, a oneof member — is judged present or absent, so an explicit `false`
-satisfies a REQUIRED `optional bool`. A presence-less proto3 scalar cannot tell
-unset from zero, so a REQUIRED one needs a rule that rejects the zero value.
+- **protovalidate** keeps a request's own fields — `parent`, the resource
+  field itself, `update_mask` — and value rules on the resource's fields:
+  lengths, patterns, ranges. A value rule on a `REQUIRED` field needs
+  `ignore = IGNORE_IF_ZERO_VALUE`, so an update that leaves it out passes.
+- **`missing_required_paths`** reads `REQUIRED` off the resource, with the mask
+  the request carries:
+
+```rust
+use aip::FieldBehavior;
+
+// create: every REQUIRED field
+let missing = item.missing_required_paths(None);
+// update, after the implied mask is filled in
+let missing = item.missing_required_paths(Some(&update_mask.paths));
+if !missing.is_empty() { /* InvalidArgument, naming each path */ }
+```
+
+`Some(paths)` checks only the fields the mask names. A path naming a message
+checks everything beneath it; a nested path, just that field. Expand `*` with
+`MUTABLE_PATHS` first. The parameter is the owned `FieldMask`'s `paths` as it
+is, so a request's mask is passed without conversion, and `None` needs no type
+annotation.
+
+Nested messages follow AIP-203's rule that a nested message's annotations are
+independent of its parent's: a set singular message is descended into, and its
+own `REQUIRED` fields are reported as dotted paths (`destination.city`). An
+unset one is not entered on a create, or when the mask names it whole — its own
+`REQUIRED` is reported at its level. A nested path is checked even when its
+parent is unset, reading the parent as empty: `update_mask: destination.city`
+with no `destination` writes `destination.city` as empty, so it would clear a
+`REQUIRED` field and is reported. Repeated and map fields are present when not
+empty and are not descended into. A message type that contains itself is entered once per
+path, since every path is a `&'static str` spelled out at generation time.
+
+Presence is read as protobuf reads it, the rule carried over from aip-go
+because it was a bug there first: a field with presence — a message, an
+`optional` scalar, a oneof member — is judged set or unset, so an explicit
+`false` satisfies a `REQUIRED` `optional bool`. A presence-less proto3 scalar
+cannot tell unset from zero, so a `REQUIRED` one must be non-zero, and a
+`REQUIRED` `bool` must be `true`.
+
+A `REQUIRED` field in a oneof of a message from *another* package fails
+generation: the check names the oneof's enum by its path within the package,
+which does not reach another package's.
+
+aip-go's `MissingRequiredPaths` answers the same, by reflection.
+
+What *is* still worth a lint is the inverse of the old one: a `REQUIRED` field
+on a resource that also carries `(buf.validate.field).required` is one every
+partial update that omits it is rejected for. That belongs in
+[protoc-gen-aip-lint](https://github.com/protoc-contrib/protoc-gen-aip-lint).
 
 ### Resource names
 
@@ -410,15 +494,16 @@ for `FooView<'_>` as well. The bodies are token-identical: a view's field holds
 `&str` where the owned message holds `String`, and every operation these
 accessors perform is spelled the same for both.
 
-`clear_output_only` is not doubled. It takes `&mut self`, and a view does not
-own what it would clear.
+`aip::FieldBehavior` is not implemented for views. Its clearing walks take
+`&mut self`, and a view does not own what they would clear; implying a mask
+means writing it onto the request, which is the owned message's job.
 
 Off by default, and it has to be: nothing in a `CodeGeneratorRequest` says
 whether buffa generated views, and emitting `impl FooView<'_>` when it did not
 is a compile error in the consumer rather than a missing method.
 
-`MUTABLE_PATHS` is unaffected — it is an associated constant on the resource, so
-there is nothing for a view to borrow.
+`MUTABLE_PATHS` needs no view either — it is an associated constant on the
+resource, so there is nothing for a view to borrow.
 
 ### Or skip the packaging output: `packaging=false`
 

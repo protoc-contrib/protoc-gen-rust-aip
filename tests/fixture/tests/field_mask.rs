@@ -4,6 +4,7 @@
 //! `(buf.validate.field).field_mask.in`, which protovalidate runs. See the
 //! module docs on `emit::field_mask`.
 
+use aip::FieldBehavior;
 use aip_fixture::proto::example::v1::{Book, Shipment};
 
 #[test]
@@ -138,7 +139,7 @@ fn negative_zero_is_populated() {
     assert_eq!(meter.implied_update_mask(), ["level"]);
 }
 
-// --- immutable_changes ------------------------------------------------------
+// --- changed_immutable_paths ------------------------------------------------------
 
 #[test]
 fn a_changed_immutable_field_is_reported() {
@@ -150,7 +151,7 @@ fn a_changed_immutable_field_is_reported() {
         serial: "s2".to_owned(),
         ..Default::default()
     };
-    assert_eq!(update.immutable_changes(&stored), ["serial"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["serial"]);
 }
 
 #[test]
@@ -160,9 +161,9 @@ fn an_echoed_or_unset_immutable_field_is_not() {
         ..Default::default()
     };
     // Echoed back unchanged.
-    assert!(stored.clone().immutable_changes(&stored).is_empty());
+    assert!(stored.clone().changed_immutable_paths(&stored).is_empty());
     // Left unset by the update.
-    assert!(Meter::default().immutable_changes(&stored).is_empty());
+    assert!(Meter::default().changed_immutable_paths(&stored).is_empty());
 }
 
 #[test]
@@ -177,5 +178,340 @@ fn an_output_only_immutable_field_is_left_to_clearing() {
         etag: "e1".to_owned(),
         ..Default::default()
     };
-    assert!(update.immutable_changes(&stored).is_empty());
+    assert!(update.changed_immutable_paths(&stored).is_empty());
+}
+
+// --- changed_immutable_paths: UNORDERED_LIST --------------------------------
+
+use aip_fixture::proto::example::v1::{Destination, Geo, Node, Order, order};
+use buffa::MessageField;
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|&value| value.to_owned()).collect()
+}
+
+fn order_with_lists(legs: &[&str], tags: &[&str]) -> Order {
+    Order {
+        legs: strings(legs),
+        tags: strings(tags),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_unordered_list_in_another_order_is_unchanged() {
+    let stored = order_with_lists(&[], &["a", "b", "c"]);
+    let update = order_with_lists(&[], &["c", "a", "b"]);
+    assert!(update.changed_immutable_paths(&stored).is_empty());
+}
+
+#[test]
+fn an_unordered_list_compares_as_a_multiset() {
+    let stored = order_with_lists(&[], &["a", "a", "b"]);
+    // Same elements once each, different counts.
+    let update = order_with_lists(&[], &["a", "b", "b"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+    // A different length.
+    let update = order_with_lists(&[], &["a", "b"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+    // A different element.
+    let update = order_with_lists(&[], &["a", "a", "c"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+}
+
+#[test]
+fn an_ordered_list_in_another_order_is_changed() {
+    let stored = order_with_lists(&["x", "y"], &[]);
+    let update = order_with_lists(&["y", "x"], &[]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["legs"]);
+}
+
+// --- missing_required_paths -------------------------------------------------
+
+fn destination(city: &str, latitude: Option<f64>) -> Destination {
+    Destination {
+        city: city.to_owned(),
+        geo: match latitude {
+            Some(latitude) => Geo {
+                latitude,
+                ..Default::default()
+            }
+            .into(),
+            None => MessageField::none(),
+        },
+        ..Default::default()
+    }
+}
+
+/// An order that sets every REQUIRED field, at every depth it is checked.
+fn complete() -> Order {
+    Order {
+        title: "t".to_owned(),
+        confirmed: true,
+        quantity: Some(1),
+        destination: destination("Sofia", Some(42.7)).into(),
+        stops: vec![Destination::default()],
+        ..Default::default()
+    }
+}
+
+fn mask(paths: &[&str]) -> Vec<String> {
+    strings(paths)
+}
+
+#[test]
+fn a_create_must_set_every_required_field() {
+    assert_eq!(
+        Order::default().missing_required_paths(None),
+        ["title", "confirmed", "quantity", "destination", "stops"]
+    );
+    assert!(complete().missing_required_paths(None).is_empty());
+}
+
+#[test]
+fn reads_presence_as_protobuf_does_for_required() {
+    let order = Order {
+        // Explicit presence: zero is set.
+        quantity: Some(0),
+        // Implicit presence: a REQUIRED bool must be true.
+        confirmed: false,
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["confirmed"]);
+}
+
+#[test]
+fn descends_into_a_set_message_at_any_depth() {
+    let order = Order {
+        destination: destination("", Some(0.0)).into(),
+        ..complete()
+    };
+    assert_eq!(
+        order.missing_required_paths(None),
+        ["destination.city", "destination.geo.latitude"]
+    );
+}
+
+#[test]
+fn a_nested_message_is_checked_only_when_set() {
+    // `billing` is not REQUIRED: unset, nothing beneath it is checked; set, its
+    // own REQUIRED fields apply. Its `geo` is unset, so it is not entered.
+    assert!(complete().missing_required_paths(None).is_empty());
+    let order = Order {
+        billing: destination("", None).into(),
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["billing.city"]);
+}
+
+#[test]
+fn a_repeated_field_is_present_when_not_empty_and_never_entered() {
+    // `complete` holds one empty Destination in `stops`: its missing city is
+    // not reported.
+    assert!(complete().missing_required_paths(None).is_empty());
+}
+
+#[test]
+fn enters_the_oneof_member_that_is_set() {
+    let order = Order {
+        payment: Some(order::Payment::Voucher(Box::default())),
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["voucher.code"]);
+
+    let order = Order {
+        payment: Some(order::Payment::Card(String::new())),
+        ..complete()
+    };
+    assert!(order.missing_required_paths(None).is_empty());
+}
+
+#[test]
+fn enters_a_recursive_message_once_per_path() {
+    let order = Order {
+        root: MessageField::some(Node {
+            child: MessageField::some(Node::default()),
+            ..Default::default()
+        }),
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["root.label"]);
+}
+
+#[test]
+fn an_update_checks_only_the_fields_its_mask_names() {
+    // Nothing REQUIRED is set, but only `title` is named.
+    let paths = mask(&["title"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["title"]
+    );
+    // A mask naming no REQUIRED field asks for none.
+    let paths = mask(&["billing", "legs"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_mask_naming_a_message_checks_everything_beneath_it() {
+    let order = Order {
+        destination: destination("", Some(0.0)).into(),
+        ..Default::default()
+    };
+    let paths = mask(&["destination"]);
+    assert_eq!(
+        order.missing_required_paths(Some(&paths)),
+        ["destination.city", "destination.geo.latitude"]
+    );
+}
+
+#[test]
+fn a_nested_path_checks_just_that_field() {
+    let order = Order {
+        destination: destination("", Some(0.0)).into(),
+        ..Default::default()
+    };
+    let paths = mask(&["destination.city"]);
+    assert_eq!(
+        order.missing_required_paths(Some(&paths)),
+        ["destination.city"]
+    );
+    let paths = mask(&["destination.geo"]);
+    assert_eq!(
+        order.missing_required_paths(Some(&paths)),
+        ["destination.geo.latitude"]
+    );
+}
+
+#[test]
+fn takes_a_field_mask_paths_as_they_are() {
+    // The owned `FieldMask` holds `Vec<String>`: a request's mask is passed
+    // with no conversion.
+    let update_mask = buffa_types::google::protobuf::FieldMask {
+        paths: mask(&["title", "confirmed"]),
+        ..Default::default()
+    };
+    let order = Order {
+        title: "t".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        order.missing_required_paths(Some(&update_mask.paths)),
+        ["confirmed"]
+    );
+}
+
+#[test]
+fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
+    // The update writes `destination.city` as empty, clearing a REQUIRED field.
+    let paths = mask(&["destination.city"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["destination.city"]
+    );
+    // Two levels down, through two unset messages.
+    let paths = mask(&["destination.geo.latitude"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["destination.geo.latitude"]
+    );
+    // Through a message that is not REQUIRED itself.
+    let paths = mask(&["billing.city"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["billing.city"]
+    );
+    // Through a oneof member that is not the one set.
+    let paths = mask(&["voucher.code"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["voucher.code"]
+    );
+    let order = Order {
+        payment: Some(order::Payment::Card("4242".to_owned())),
+        ..Default::default()
+    };
+    assert_eq!(order.missing_required_paths(Some(&paths)), ["voucher.code"]);
+}
+
+#[test]
+fn a_nested_path_to_a_field_that_is_not_required_reports_nothing() {
+    let paths = mask(&["billing.line2", "destination.line2"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_create_does_not_enter_an_unset_message() {
+    // Only the REQUIRED fields of the order itself; nothing beneath the unset
+    // `destination`, `billing`, `voucher` or `root`.
+    assert_eq!(
+        Order::default().missing_required_paths(None),
+        ["title", "confirmed", "quantity", "destination", "stops"]
+    );
+}
+
+#[test]
+fn an_unset_message_named_whole_reports_only_itself() {
+    // REQUIRED itself: reported at its level, nothing beneath it.
+    let paths = mask(&["destination"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["destination"]
+    );
+    // Not REQUIRED: nothing at all.
+    let paths = mask(&["billing"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+    // The same one level down: `destination.geo` is named whole and is not
+    // REQUIRED, so its `latitude` is not checked.
+    let paths = mask(&["destination.geo"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+}
+
+// --- FieldBehavior as one generic layer -------------------------------------
+
+/// What a server layer over every request does, without knowing the type.
+fn admit<T: FieldBehavior>(message: &mut T) -> Vec<&'static str> {
+    message.clear_output_only();
+    message.missing_required_paths(None)
+}
+
+#[test]
+fn one_generic_layer_handles_every_generated_message() {
+    // Carrier only has a field to clear: every other item is the trait's
+    // "nothing to do" default.
+    let mut carrier = Carrier {
+        name: "DHL".to_owned(),
+        scac: "SERVER".to_owned(),
+        ..Default::default()
+    };
+    assert!(admit(&mut carrier).is_empty());
+    assert_eq!(carrier.scac, "");
+    assert!(Carrier::MUTABLE_PATHS.is_empty());
+    assert!(carrier.implied_update_mask().is_empty());
+    assert!(
+        carrier
+            .changed_immutable_paths(&Carrier::default())
+            .is_empty()
+    );
+
+    // A resource gets its own checks through the same layer.
+    assert_eq!(
+        admit(&mut Order::default()),
+        ["title", "confirmed", "quantity", "destination", "stops"]
+    );
 }
