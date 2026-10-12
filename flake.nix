@@ -39,12 +39,7 @@
           src = pkgs.lib.cleanSource ./.;
           doCheck = false;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            # The fixture takes aip-rs from git until the request-level
-            # FieldBehavior items are released; drop this with it.
-            outputHashes."aip-rs-0.2.0" = "sha256-u7xbZgyYRWH4MjYS9AyxPhZQBSFz+4mTgshqL95b+3o=";
-          };
+          cargoLock.lockFile = ./Cargo.lock;
 
           # Only the plugin. The other workspace member is the fixture, which
           # exists to regenerate and type-check the test schema and has no place
