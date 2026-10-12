@@ -1,8 +1,8 @@
 //! Emits a resource's `aip::FieldBehavior` items: `MUTABLE_PATHS` — which
 //! fields an update may write — and `implied_update_mask`, the mask AIP-134
 //! implies when a client omits one, along with the two AIP-203 checks an update
-//! or create needs: `changed_immutable_paths` and `missing_required_paths`.
-//! Their semantics are documented on the trait, in aip-rs.
+//! or create needs: `validate_immutable` and `validate_required_fields`. Their
+//! semantics are documented on the trait, in aip-rs.
 //!
 //! Read off `google.api.field_behavior` — everything not `OUTPUT_ONLY`,
 //! `IDENTIFIER` or `IMMUTABLE`. The three are one question, not three: the
@@ -46,8 +46,8 @@
 //! `REQUIRED` field means something different in each: a create must set it,
 //! an update may omit it unless its mask names it. A rule on the resource
 //! cannot tell which request it is in, so protovalidate can only enforce it
-//! through a CEL rule restated on every request. `missing_required_paths` reads
-//! the annotation instead, with the mask the request carries.
+//! through a CEL rule restated on every request. `validate_required_fields`
+//! reads the annotation instead, with the mask the request carries.
 //!
 //! See <https://google.aip.dev/134#field-masks>.
 
@@ -73,7 +73,7 @@ fn writable(field: &Field) -> bool {
 ///
 /// # Errors
 ///
-/// If a `REQUIRED` field `missing_required_paths` has to check sits in a oneof
+/// If a `REQUIRED` field `validate_required_fields` has to check sits in a oneof
 /// of a message from another package, whose enum the emitted code cannot name.
 pub fn emit_file(
     file: &str,
@@ -154,15 +154,21 @@ fn emit_resource(
 
     let immutable = immutable_checks(message);
     if !immutable.is_empty() {
-        let body = collect_into("changed", &immutable);
         items.push(quote! {
-            fn changed_immutable_paths(&self, existing: &Self) -> ::std::vec::Vec<&'static str> {
-                #body
+            fn validate_immutable(
+                &self,
+                existing: &Self,
+            ) -> ::core::result::Result<(), ::aip::ImmutableError> {
+                let mut changed: ::std::vec::Vec<&'static str> = ::std::vec::Vec::new();
+                #( #immutable )*
+                ::aip::ImmutableError::check(
+                    changed.into_iter().map(::aip::FieldPath::from).collect(),
+                )
             }
         });
     }
 
-    if let Some(required) = missing_required_paths_fn(index, message)? {
+    if let Some(required) = validate_required_fields_fn(index, message)? {
         items.push(required);
     }
 
@@ -178,9 +184,9 @@ struct Required {
     descends: bool,
 }
 
-/// `missing_required_paths`, or `None` when nothing beneath `resource` is
+/// `validate_required_fields`, or `None` when nothing beneath `resource` is
 /// `REQUIRED` and the trait's default already answers.
-fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<Option<TokenStream>> {
+fn validate_required_fields_fn(index: &Index, resource: &Message) -> Result<Option<TokenStream>> {
     let mut seen = vec![resource.fqn.clone()];
     let required = required_checks(
         index,
@@ -222,10 +228,10 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<Option
             clippy::too_many_lines,
             reason = "one statement per REQUIRED path, spelled out at generation time"
         )]
-        fn missing_required_paths(
+        fn validate_required_fields(
             &self,
             mask: ::core::option::Option<&[::std::string::String]>,
-        ) -> ::std::vec::Vec<&'static str> {
+        ) -> ::core::result::Result<(), ::aip::RequiredError> {
             let covered = |path: &str| {
                 mask.is_none_or(|paths| {
                     paths.iter().any(|named| {
@@ -237,9 +243,11 @@ fn missing_required_paths_fn(index: &Index, resource: &Message) -> Result<Option
                 })
             };
             #reaches
-            let mut missing = ::std::vec::Vec::new();
+            let mut missing: ::std::vec::Vec<&'static str> = ::std::vec::Vec::new();
             #( #statements )*
-            missing
+            ::aip::RequiredError::check(
+                missing.into_iter().map(::aip::FieldPath::from).collect(),
+            )
         }
     }))
 }
@@ -401,13 +409,13 @@ fn unset_checks(
 }
 
 /// Fails if `field` is a oneof member of a message outside `package` that
-/// `missing_required_paths` has to read: the emitted check names the oneof's
+/// `validate_required_fields` has to read: the emitted check names the oneof's
 /// enum by its path within the package, which does not reach another
 /// package's.
 fn check_oneof_reachable(package: &str, message: &Message, field: &Field) -> Result<()> {
     if field.oneof.is_some() && message.package != package {
         bail!(
-            "{}.{}: missing_required_paths for a resource in {package} has to read this oneof \
+            "{}.{}: validate_required_fields for a resource in {package} has to read this oneof \
              member, but its enum belongs to {}, which the emitted code cannot name; drop \
              REQUIRED from it and from everything beneath it, or move the message into \
              {package}",
@@ -630,25 +638,25 @@ mod tests {
         })
     }
 
-    fn missing_required_paths_for(index: &Index) -> Result<Option<TokenStream>> {
+    fn validate_required_fields_for(index: &Index) -> Result<Option<TokenStream>> {
         let order = index.get(".api.Order").expect("api.Order is indexed");
-        missing_required_paths_fn(index, order)
+        validate_required_fields_fn(index, order)
     }
 
     #[test]
     fn a_required_oneof_member_in_another_package_fails_generation() {
-        let error = missing_required_paths_for(&index(true))
+        let error = validate_required_fields_for(&index(true))
             .expect_err("a oneof the emitted code cannot name");
         assert_eq!(
             error.to_string(),
-            "dep.Payment.card: missing_required_paths for a resource in api has to read this \
-             oneof member, but its enum belongs to dep, which the emitted code cannot name; drop \
+            "dep.Payment.card: validate_required_fields for a resource in api has to read \
+             this oneof member, but its enum belongs to dep, which the emitted code cannot name; drop \
              REQUIRED from it and from everything beneath it, or move the message into api"
         );
     }
 
     #[test]
     fn a_oneof_in_another_package_with_nothing_required_is_fine() {
-        assert!(missing_required_paths_for(&index(false)).is_ok());
+        assert!(validate_required_fields_for(&index(false)).is_ok());
     }
 }

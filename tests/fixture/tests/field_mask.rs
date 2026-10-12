@@ -139,7 +139,7 @@ fn negative_zero_is_populated() {
     assert_eq!(meter.implied_update_mask(), ["level"]);
 }
 
-// --- changed_immutable_paths ------------------------------------------------------
+// --- validate_immutable ----------------------------------------------------
 
 #[test]
 fn a_changed_immutable_field_is_reported() {
@@ -151,7 +151,7 @@ fn a_changed_immutable_field_is_reported() {
         serial: "s2".to_owned(),
         ..Default::default()
     };
-    assert_eq!(update.changed_immutable_paths(&stored), ["serial"]);
+    assert_eq!(update.validate_immutable(&stored).reported(), ["serial"]);
 }
 
 #[test]
@@ -161,9 +161,9 @@ fn an_echoed_or_unset_immutable_field_is_not() {
         ..Default::default()
     };
     // Echoed back unchanged.
-    assert!(stored.clone().changed_immutable_paths(&stored).is_empty());
+    assert!(stored.clone().validate_immutable(&stored).is_ok());
     // Left unset by the update.
-    assert!(Meter::default().changed_immutable_paths(&stored).is_empty());
+    assert!(Meter::default().validate_immutable(&stored).is_ok());
 }
 
 #[test]
@@ -178,13 +178,34 @@ fn an_output_only_immutable_field_is_left_to_clearing() {
         etag: "e1".to_owned(),
         ..Default::default()
     };
-    assert!(update.changed_immutable_paths(&stored).is_empty());
+    assert!(update.validate_immutable(&stored).is_ok());
 }
 
-// --- changed_immutable_paths: UNORDERED_LIST --------------------------------
+// --- validate_immutable: UNORDERED_LIST -------------------------------------
 
 use aip_fixture::proto::example::v1::{Destination, Geo, Node, Order, order};
 use buffa::MessageField;
+
+/// The paths a check reports, as strings: empty when it passes.
+trait Reported {
+    fn reported(self) -> Vec<String>;
+}
+
+impl Reported for Result<(), aip::RequiredError> {
+    fn reported(self) -> Vec<String> {
+        self.err().map_or_else(Vec::new, |error| {
+            error.paths.iter().map(ToString::to_string).collect()
+        })
+    }
+}
+
+impl Reported for Result<(), aip::ImmutableError> {
+    fn reported(self) -> Vec<String> {
+        self.err().map_or_else(Vec::new, |error| {
+            error.paths.iter().map(ToString::to_string).collect()
+        })
+    }
+}
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|&value| value.to_owned()).collect()
@@ -202,7 +223,7 @@ fn order_with_lists(legs: &[&str], tags: &[&str]) -> Order {
 fn an_unordered_list_in_another_order_is_unchanged() {
     let stored = order_with_lists(&[], &["a", "b", "c"]);
     let update = order_with_lists(&[], &["c", "a", "b"]);
-    assert!(update.changed_immutable_paths(&stored).is_empty());
+    assert!(update.validate_immutable(&stored).is_ok());
 }
 
 #[test]
@@ -210,23 +231,23 @@ fn an_unordered_list_compares_as_a_multiset() {
     let stored = order_with_lists(&[], &["a", "a", "b"]);
     // Same elements once each, different counts.
     let update = order_with_lists(&[], &["a", "b", "b"]);
-    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+    assert_eq!(update.validate_immutable(&stored).reported(), ["tags"]);
     // A different length.
     let update = order_with_lists(&[], &["a", "b"]);
-    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+    assert_eq!(update.validate_immutable(&stored).reported(), ["tags"]);
     // A different element.
     let update = order_with_lists(&[], &["a", "a", "c"]);
-    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+    assert_eq!(update.validate_immutable(&stored).reported(), ["tags"]);
 }
 
 #[test]
 fn an_ordered_list_in_another_order_is_changed() {
     let stored = order_with_lists(&["x", "y"], &[]);
     let update = order_with_lists(&["y", "x"], &[]);
-    assert_eq!(update.changed_immutable_paths(&stored), ["legs"]);
+    assert_eq!(update.validate_immutable(&stored).reported(), ["legs"]);
 }
 
-// --- missing_required_paths -------------------------------------------------
+// --- validate_required_fields ----------------------------------------------
 
 fn destination(city: &str, latitude: Option<f64>) -> Destination {
     Destination {
@@ -262,10 +283,10 @@ fn mask(paths: &[&str]) -> Vec<String> {
 #[test]
 fn a_create_must_set_every_required_field() {
     assert_eq!(
-        Order::default().missing_required_paths(None),
+        Order::default().validate_required_fields(None).reported(),
         ["title", "confirmed", "quantity", "destination", "stops"]
     );
-    assert!(complete().missing_required_paths(None).is_empty());
+    assert!(complete().validate_required_fields(None).is_ok());
 }
 
 #[test]
@@ -277,7 +298,10 @@ fn reads_presence_as_protobuf_does_for_required() {
         confirmed: false,
         ..complete()
     };
-    assert_eq!(order.missing_required_paths(None), ["confirmed"]);
+    assert_eq!(
+        order.validate_required_fields(None).reported(),
+        ["confirmed"]
+    );
 }
 
 #[test]
@@ -287,7 +311,7 @@ fn descends_into_a_set_message_at_any_depth() {
         ..complete()
     };
     assert_eq!(
-        order.missing_required_paths(None),
+        order.validate_required_fields(None).reported(),
         ["destination.city", "destination.geo.latitude"]
     );
 }
@@ -296,19 +320,22 @@ fn descends_into_a_set_message_at_any_depth() {
 fn a_nested_message_is_checked_only_when_set() {
     // `billing` is not REQUIRED: unset, nothing beneath it is checked; set, its
     // own REQUIRED fields apply. Its `geo` is unset, so it is not entered.
-    assert!(complete().missing_required_paths(None).is_empty());
+    assert!(complete().validate_required_fields(None).is_ok());
     let order = Order {
         billing: destination("", None).into(),
         ..complete()
     };
-    assert_eq!(order.missing_required_paths(None), ["billing.city"]);
+    assert_eq!(
+        order.validate_required_fields(None).reported(),
+        ["billing.city"]
+    );
 }
 
 #[test]
 fn a_repeated_field_is_present_when_not_empty_and_never_entered() {
     // `complete` holds one empty Destination in `stops`: its missing city is
     // not reported.
-    assert!(complete().missing_required_paths(None).is_empty());
+    assert!(complete().validate_required_fields(None).is_ok());
 }
 
 #[test]
@@ -317,13 +344,16 @@ fn enters_the_oneof_member_that_is_set() {
         payment: Some(order::Payment::Voucher(Box::default())),
         ..complete()
     };
-    assert_eq!(order.missing_required_paths(None), ["voucher.code"]);
+    assert_eq!(
+        order.validate_required_fields(None).reported(),
+        ["voucher.code"]
+    );
 
     let order = Order {
         payment: Some(order::Payment::Card(String::new())),
         ..complete()
     };
-    assert!(order.missing_required_paths(None).is_empty());
+    assert!(order.validate_required_fields(None).is_ok());
 }
 
 #[test]
@@ -335,7 +365,10 @@ fn enters_a_recursive_message_once_per_path() {
         }),
         ..complete()
     };
-    assert_eq!(order.missing_required_paths(None), ["root.label"]);
+    assert_eq!(
+        order.validate_required_fields(None).reported(),
+        ["root.label"]
+    );
 }
 
 #[test]
@@ -343,15 +376,17 @@ fn an_update_checks_only_the_fields_its_mask_names() {
     // Nothing REQUIRED is set, but only `title` is named.
     let paths = mask(&["title"]);
     assert_eq!(
-        Order::default().missing_required_paths(Some(&paths)),
+        Order::default()
+            .validate_required_fields(Some(&paths))
+            .reported(),
         ["title"]
     );
     // A mask naming no REQUIRED field asks for none.
     let paths = mask(&["billing", "legs"]);
     assert!(
         Order::default()
-            .missing_required_paths(Some(&paths))
-            .is_empty()
+            .validate_required_fields(Some(&paths))
+            .is_ok()
     );
 }
 
@@ -363,7 +398,7 @@ fn a_mask_naming_a_message_checks_everything_beneath_it() {
     };
     let paths = mask(&["destination"]);
     assert_eq!(
-        order.missing_required_paths(Some(&paths)),
+        order.validate_required_fields(Some(&paths)).reported(),
         ["destination.city", "destination.geo.latitude"]
     );
 }
@@ -376,12 +411,12 @@ fn a_nested_path_checks_just_that_field() {
     };
     let paths = mask(&["destination.city"]);
     assert_eq!(
-        order.missing_required_paths(Some(&paths)),
+        order.validate_required_fields(Some(&paths)).reported(),
         ["destination.city"]
     );
     let paths = mask(&["destination.geo"]);
     assert_eq!(
-        order.missing_required_paths(Some(&paths)),
+        order.validate_required_fields(Some(&paths)).reported(),
         ["destination.geo.latitude"]
     );
 }
@@ -399,7 +434,9 @@ fn takes_a_field_mask_paths_as_they_are() {
         ..Default::default()
     };
     assert_eq!(
-        order.missing_required_paths(Some(&update_mask.paths)),
+        order
+            .validate_required_fields(Some(&update_mask.paths))
+            .reported(),
         ["confirmed"]
     );
 }
@@ -409,32 +446,43 @@ fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
     // The update writes `destination.city` as empty, clearing a REQUIRED field.
     let paths = mask(&["destination.city"]);
     assert_eq!(
-        Order::default().missing_required_paths(Some(&paths)),
+        Order::default()
+            .validate_required_fields(Some(&paths))
+            .reported(),
         ["destination.city"]
     );
     // Two levels down, through two unset messages.
     let paths = mask(&["destination.geo.latitude"]);
     assert_eq!(
-        Order::default().missing_required_paths(Some(&paths)),
+        Order::default()
+            .validate_required_fields(Some(&paths))
+            .reported(),
         ["destination.geo.latitude"]
     );
     // Through a message that is not REQUIRED itself.
     let paths = mask(&["billing.city"]);
     assert_eq!(
-        Order::default().missing_required_paths(Some(&paths)),
+        Order::default()
+            .validate_required_fields(Some(&paths))
+            .reported(),
         ["billing.city"]
     );
     // Through a oneof member that is not the one set.
     let paths = mask(&["voucher.code"]);
     assert_eq!(
-        Order::default().missing_required_paths(Some(&paths)),
+        Order::default()
+            .validate_required_fields(Some(&paths))
+            .reported(),
         ["voucher.code"]
     );
     let order = Order {
         payment: Some(order::Payment::Card("4242".to_owned())),
         ..Default::default()
     };
-    assert_eq!(order.missing_required_paths(Some(&paths)), ["voucher.code"]);
+    assert_eq!(
+        order.validate_required_fields(Some(&paths)).reported(),
+        ["voucher.code"]
+    );
 }
 
 #[test]
@@ -442,8 +490,8 @@ fn a_nested_path_to_a_field_that_is_not_required_reports_nothing() {
     let paths = mask(&["billing.line2", "destination.line2"]);
     assert!(
         Order::default()
-            .missing_required_paths(Some(&paths))
-            .is_empty()
+            .validate_required_fields(Some(&paths))
+            .is_ok()
     );
 }
 
@@ -452,7 +500,7 @@ fn a_create_does_not_enter_an_unset_message() {
     // Only the REQUIRED fields of the order itself; nothing beneath the unset
     // `destination`, `billing`, `voucher` or `root`.
     assert_eq!(
-        Order::default().missing_required_paths(None),
+        Order::default().validate_required_fields(None).reported(),
         ["title", "confirmed", "quantity", "destination", "stops"]
     );
 }
@@ -462,32 +510,34 @@ fn an_unset_message_named_whole_reports_only_itself() {
     // REQUIRED itself: reported at its level, nothing beneath it.
     let paths = mask(&["destination"]);
     assert_eq!(
-        Order::default().missing_required_paths(Some(&paths)),
+        Order::default()
+            .validate_required_fields(Some(&paths))
+            .reported(),
         ["destination"]
     );
     // Not REQUIRED: nothing at all.
     let paths = mask(&["billing"]);
     assert!(
         Order::default()
-            .missing_required_paths(Some(&paths))
-            .is_empty()
+            .validate_required_fields(Some(&paths))
+            .is_ok()
     );
     // The same one level down: `destination.geo` is named whole and is not
     // REQUIRED, so its `latitude` is not checked.
     let paths = mask(&["destination.geo"]);
     assert!(
         Order::default()
-            .missing_required_paths(Some(&paths))
-            .is_empty()
+            .validate_required_fields(Some(&paths))
+            .is_ok()
     );
 }
 
 // --- FieldBehavior as one generic layer -------------------------------------
 
 /// What a server layer over every request does, without knowing the type.
-fn admit<T: FieldBehavior>(message: &mut T) -> Vec<&'static str> {
+fn admit<T: FieldBehavior>(message: &mut T) -> Vec<String> {
     message.clear_output_only();
-    message.missing_required_paths(None)
+    message.validate_required_fields(None).reported()
 }
 
 #[test]
@@ -503,11 +553,7 @@ fn one_generic_layer_handles_every_generated_message() {
     assert_eq!(carrier.scac, "");
     assert!(Carrier::MUTABLE_PATHS.is_empty());
     assert!(carrier.implied_update_mask().is_empty());
-    assert!(
-        carrier
-            .changed_immutable_paths(&Carrier::default())
-            .is_empty()
-    );
+    assert!(carrier.validate_immutable(&Carrier::default()).is_ok());
 
     // A resource gets its own checks through the same layer.
     assert_eq!(

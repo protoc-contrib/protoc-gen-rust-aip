@@ -104,8 +104,8 @@ enum Unit {
   UNIT_LITRE = 1;
 }
 
-// A resource for `missing_required_paths`, `clear_input_only` and the
-// UNORDERED_LIST comparison in `changed_immutable_paths`: REQUIRED fields of
+// A resource for `validate_required_fields`, `clear_input_only` and the
+// UNORDERED_LIST comparison in `validate_immutable`: REQUIRED fields of
 // every shape the check reads, nested ones it has to descend into, and one it
 // must not.
 message Order {
@@ -171,20 +171,43 @@ message Node {
   Node child = 2;
 }
 
-// AIP standard method requests for `missing_required_request_paths` and
-// `imply_update_mask`, generated on a service's create, update and batch
+// AIP standard method requests for `validate_required`, `imply_resource_name`
+// and `imply_update_mask`, generated on a service's create, update and batch
 // requests -- and on the entries of a batch -- and on nothing else.
 service Orders {
   rpc CreateOrder(CreateOrderRequest) returns (Order);
+  rpc CreateLine(CreateLineRequest) returns (Line);
   rpc UpdateOrder(UpdateOrderRequest) returns (Order);
   rpc BatchCreateOrders(BatchCreateOrdersRequest) returns (BatchOrdersResponse);
   rpc BatchUpdateOrders(BatchUpdateOrdersRequest) returns (BatchOrdersResponse);
 }
 
-// A create: a resource field and no update_mask.
+// A create: a resource field and no update_mask. Its `order_id` names the
+// order under its top-level pattern.
 message CreateOrderRequest {
   string parent = 1;
   Order order = 2;
+  string order_id = 3;
+}
+
+// A resource under a nested pattern, whose own `parent` the server copies from
+// the create request.
+message Line {
+  option (google.api.resource) = {
+    type: "example.com/Line"
+    pattern: "orders/{order}/lines/{line}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string parent = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string sku = 3 [(google.api.field_behavior) = REQUIRED];
+}
+
+// A create under a parent: the line is named `<parent>/lines/<line_id>`.
+message CreateLineRequest {
+  string parent = 1;
+  string line_id = 2;
+  Line line = 3;
 }
 
 // An update: a resource field and an update_mask.

@@ -196,16 +196,17 @@ pub fn render(
     Ok(files)
 }
 
-/// One `impl ::aip::FieldBehavior` per message declared in `file` that any
-/// pass emitted an item for, in declaration order: the clearing walks a
-/// message needs, on a resource the update-mask and check items, and on a
-/// create, update or batch request the request-level ones. A type implements a
-/// trait once, so the passes' items are gathered here rather than each
-/// emitting its own impl. Every item left out is the trait's "nothing to do"
-/// default.
+/// One `impl ::aip::FieldBehavior` per message declared in `file`, in
+/// declaration order: the clearing walks a message needs, on a resource the
+/// update-mask and check items, and on a create, update or batch request the
+/// request-level ones. A type implements a trait once, so the passes' items are
+/// gathered here rather than each emitting its own impl. Every item left out is
+/// the trait's "nothing to do" default.
 ///
-/// Every resource gets an impl, an empty one if nothing differs from the
-/// defaults, because a request's items call it whatever it holds.
+/// Every message gets an impl — an empty one when nothing differs from the
+/// defaults — so a consumer's code generic over `T: aip::FieldBehavior`, such
+/// as a table naming every request a service takes, needs no impls of its own,
+/// and a request's items can call the impl of whatever they hold.
 fn field_behavior_impls(
     file: &str,
     index: &Index,
@@ -213,26 +214,21 @@ fn field_behavior_impls(
     resources: BTreeMap<String, Vec<TokenStream>>,
 ) -> TokenStream {
     let mut resources = resources;
-    let impls = index.in_file(file).filter_map(|message| {
+    let impls = index.in_file(file).map(|message| {
         let mut items: Vec<TokenStream> = walks
             .iter()
             .filter_map(|walk| walk.get(&message.fqn).cloned())
             .collect();
-        let declared = resources.remove(&message.fqn);
-        let resource = declared.is_some();
-        items.extend(declared.unwrap_or_default());
-        if items.is_empty() && !resource {
-            return None;
-        }
+        items.extend(resources.remove(&message.fqn).unwrap_or_default());
         let path: TokenStream = message
             .rust_path
             .parse()
             .expect("a message path built from proto identifiers is a valid Rust path");
-        Some(quote! {
+        quote! {
             impl ::aip::FieldBehavior for #path {
                 #( #items )*
             }
-        })
+        }
     });
     quote! { #( #impls )* }
 }
