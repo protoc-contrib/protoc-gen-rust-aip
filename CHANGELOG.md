@@ -1,6 +1,11 @@
 # Changelog
 
-## [0.2.2](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.2.1...v0.2.2) (2026-10-12)
+## [0.3.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.2.1...v0.3.0) (2026-10-12)
+
+
+### Features
+
+* build without protoc by committing the google.api types ([#31](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/31)) ([eef4164](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/eef416413cdbf65917764cc97d5b7d8715d558ed))
 
 
 ### Bug Fixes
