@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.3.0...v0.4.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* the field-behavior methods and MUTABLE_PATHS move from inherent items to the aip::FieldBehavior trait (use aip::FieldBehavior at call sites), and immutable_changes is renamed to changed_immutable_paths.
+
+### Features
+
+* generate missing_required_request_paths and imply_update_mask on requests ([#41](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/41)) ([3e01383](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/3e01383f0d56e4c3faff5889e290925dd64a88ee))
+* implement aip::FieldBehavior with REQUIRED, INPUT_ONLY and UNORDERED_LIST ([#39](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/39)) ([74fc680](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/74fc680a703a4fdc762013d72ab5d398563c9f9c))
+
 ## [0.3.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.2.1...v0.3.0) (2026-10-12)
 
 
