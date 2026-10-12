@@ -72,8 +72,9 @@ pub struct Options {
     /// `ServiceRequest` that derefs to the *view*, so without this the
     /// accessors are emitted onto a type the handler never holds.
     ///
-    /// Only the read-only accessors are doubled. `clear_output_only` takes
-    /// `&mut self`, and a view does not own what it would clear.
+    /// Only the read-only accessors are doubled. `clear_output_only` and
+    /// `clear_input_only` take `&mut self`, and a view does not own what they
+    /// would clear.
     pub views: bool,
 
     /// Whether a `google.api.resource_reference` to a resource type the
@@ -125,7 +126,8 @@ pub fn render(
         .collect();
 
     let generated: BTreeSet<String> = request.file_to_generate.iter().cloned().collect();
-    let walks = behavior::plan(index, &generated)?;
+    let outputs = behavior::plan(index, &generated, behavior::Clearing::OutputOnly)?;
+    let inputs = behavior::plan(index, &generated, behavior::Clearing::InputOnly)?;
     let lists = filter::plan(index);
 
     // Proto package to what each of its files emitted, concatenated in
@@ -140,12 +142,14 @@ pub fn render(
 
         let resources = resource::emit_file(name, &package, registry, options.views);
         let creates = resource::emit_create_ids(name, index, registry, options.views);
-        let behaviors = behavior::emit_file(name, index, &walks, &generated);
-        let masks = field_mask::emit_file(name, index, registry);
+        let outputs = behavior::emit_file(name, index, &outputs, &generated);
+        let inputs = behavior::emit_file(name, index, &inputs, &generated);
+        let masks = field_mask::emit_file(name, index, registry)?;
         let filters = filter::emit_file(name, index, &lists);
         if resources.is_empty()
             && creates.is_empty()
-            && behaviors.is_empty()
+            && outputs.is_empty()
+            && inputs.is_empty()
             && masks.is_empty()
             && filters.is_empty()
         {
@@ -154,7 +158,7 @@ pub fn render(
         by_package
             .entry(package)
             .or_default()
-            .push(quote! { #resources #creates #behaviors #masks #filters });
+            .push(quote! { #resources #creates #outputs #inputs #masks #filters });
     }
 
     let mut files = Vec::new();

@@ -1,6 +1,7 @@
 //! Generates Rust helpers for [Google AIP](https://google.aip.dev)-shaped APIs
 //! from a protobuf schema: typed resource names, AIP-133 create IDs, AIP-134
-//! mutable paths, the `OUTPUT_ONLY` clearing walk, and the AIP-160 `filter`
+//! mutable paths, the AIP-203 `REQUIRED` and `IMMUTABLE` checks, the
+//! `OUTPUT_ONLY` and `INPUT_ONLY` clearing walks, and the AIP-160 `filter`
 //! environment.
 //!
 //! The Rust counterpart of

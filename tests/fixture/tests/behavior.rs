@@ -162,3 +162,43 @@ fn descends_into_a_oneof_member_that_carries_a_message() {
     assert_eq!(handoff.name, "UPS");
     assert_eq!(handoff.scac, "");
 }
+
+// --- clear_input_only -------------------------------------------------------
+
+use aip_fixture::proto::example::v1::{Destination, Order};
+
+#[test]
+fn clears_input_only_fields_at_any_depth() {
+    let destination = |city: &str| {
+        MessageField::some(Destination {
+            city: city.to_owned(),
+            access_code: "1234".to_owned(),
+            ..Default::default()
+        })
+    };
+    let mut order = Order {
+        title: "keep me".to_owned(),
+        coupon: "SPRING".to_owned(),
+        destination: destination("Sofia"),
+        billing: destination("Plovdiv"),
+        ..Default::default()
+    };
+    order.clear_input_only();
+
+    assert_eq!(
+        order.title, "keep me",
+        "a field returned in responses must survive"
+    );
+    assert_eq!(order.coupon, "");
+    for held in [&order.destination, &order.billing] {
+        let held = held.as_option().expect("still set");
+        assert_eq!(
+            held.access_code, "",
+            "an input-only field beneath it is cleared"
+        );
+        assert!(
+            !held.city.is_empty(),
+            "but the message itself is not input-only"
+        );
+    }
+}

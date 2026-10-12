@@ -121,6 +121,6 @@ fn a_changed_optional_immutable_field_is_reported() {
         model: Some("m2".to_owned()),
         ..Default::default()
     };
-    assert_eq!(update.immutable_changes(&stored), ["model"]);
-    assert!(Lamp::default().immutable_changes(&stored).is_empty());
+    assert_eq!(update.changed_immutable_paths(&stored), ["model"]);
+    assert!(Lamp::default().changed_immutable_paths(&stored).is_empty());
 }

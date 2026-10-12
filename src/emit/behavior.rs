@@ -1,4 +1,6 @@
-//! Emits the AIP-203 `OUTPUT_ONLY` clearing walk.
+//! Emits the AIP-203 clearing walks: `clear_output_only`, which drops what a
+//! client may not set from a request, and `clear_input_only`, which drops what
+//! a server may not return from a response. One walk, run for either behavior.
 //!
 //! Generated rather than reflective, and not as an optimisation: buffa 0.9
 //! exposes only `reflect(&self)`, and marks `reflect_mut` as designed but
@@ -15,12 +17,63 @@ use quote::{format_ident, quote};
 
 use crate::messages::{Field, Index, Message};
 
+/// The field behavior a walk clears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clearing {
+    /// `OUTPUT_ONLY`: server-owned, cleared from an inbound request.
+    OutputOnly,
+    /// `INPUT_ONLY`: accepted on input, cleared from an outbound response.
+    InputOnly,
+}
+
+impl Clearing {
+    /// Whether `field` carries this behavior.
+    fn marks(self, field: &Field) -> bool {
+        match self {
+            Self::OutputOnly => field.output_only,
+            Self::InputOnly => field.input_only,
+        }
+    }
+
+    /// The annotation value, as the schema spells it.
+    fn annotation(self) -> &'static str {
+        match self {
+            Self::OutputOnly => "OUTPUT_ONLY",
+            Self::InputOnly => "INPUT_ONLY",
+        }
+    }
+
+    /// The name of the emitted method.
+    fn method(self) -> &'static str {
+        match self {
+            Self::OutputOnly => "clear_output_only",
+            Self::InputOnly => "clear_input_only",
+        }
+    }
+
+    /// What the walk is for, as its doc comment says it.
+    fn purpose(self) -> &'static str {
+        match self {
+            Self::OutputOnly => {
+                "Call it on an inbound request to drop server-owned values a \
+                 client should not be able to set, rather than rejecting the \
+                 request."
+            }
+            Self::InputOnly => {
+                "Call it on an outbound response, so a value the client may \
+                 send is never returned."
+            }
+        }
+    }
+}
+
 /// The messages a walk is emitted for.
 ///
-/// A message needs one when it has an `OUTPUT_ONLY` field, or when any message
-/// it can reach has one — clearing is recursive, so an untouched message that
-/// merely *holds* a dirty one still has to be walked.
+/// A message needs one when it has a field carrying the behavior, or when any
+/// message it can reach has one — clearing is recursive, so an untouched
+/// message that merely *holds* a dirty one still has to be walked.
 pub struct Walks {
+    clearing: Clearing,
     needed: BTreeSet<String>,
 }
 
@@ -38,7 +91,7 @@ impl Walks {
     }
 }
 
-/// Works out which messages need a walk.
+/// Works out which messages need the walk that clears `clearing`.
 ///
 /// `generated` is the set of files being generated. A message outside it gets
 /// no walk, so nothing may recurse into one: the call would name a method that
@@ -48,11 +101,12 @@ impl Walks {
 /// # Errors
 ///
 /// If a generated message holds one from a file *not* being generated that has
-/// `OUTPUT_ONLY` fields beneath it. The walk cannot reach them, so a client
-/// could write them -- and an implied update mask, which names the holding
-/// field as one path, would then store them. Generate that file too.
-pub fn plan(index: &Index, generated: &BTreeSet<String>) -> Result<Walks> {
-    check_unreachable(index, generated)?;
+/// fields carrying the behavior beneath it. The walk cannot reach them: for
+/// `OUTPUT_ONLY` a client could write them -- and an implied update mask, which
+/// names the holding field as one path, would then store them; for
+/// `INPUT_ONLY` a response would return them. Generate that file too.
+pub fn plan(index: &Index, generated: &BTreeSet<String>, clearing: Clearing) -> Result<Walks> {
+    check_unreachable(index, generated, clearing)?;
     let candidates: Vec<&Message> = generated
         .iter()
         .flat_map(|file| index.in_file(file))
@@ -60,7 +114,7 @@ pub fn plan(index: &Index, generated: &BTreeSet<String>) -> Result<Walks> {
 
     let mut needed: BTreeSet<String> = candidates
         .iter()
-        .filter(|message| message.fields.iter().any(|field| field.output_only))
+        .filter(|message| message.fields.iter().any(|field| clearing.marks(field)))
         .map(|message| message.fqn.clone())
         .collect();
 
@@ -76,7 +130,7 @@ pub fn plan(index: &Index, generated: &BTreeSet<String>) -> Result<Walks> {
             if message
                 .fields
                 .iter()
-                .filter_map(|field| reachable(field, index, generated))
+                .filter_map(|field| reachable(field, index, generated, clearing))
                 .any(|target| needed.contains(&target))
             {
                 needed.insert(message.fqn.clone());
@@ -88,18 +142,22 @@ pub fn plan(index: &Index, generated: &BTreeSet<String>) -> Result<Walks> {
         }
     }
 
-    Ok(Walks { needed })
+    Ok(Walks { clearing, needed })
 }
 
 /// Fails if a generated message holds a message the walk cannot reach that has
-/// `OUTPUT_ONLY` fields beneath it. See [`plan`].
-fn check_unreachable(index: &Index, generated: &BTreeSet<String>) -> Result<()> {
-    // Which messages, in any file, have an OUTPUT_ONLY field at any depth --
+/// fields carrying the behavior beneath it. See [`plan`].
+fn check_unreachable(
+    index: &Index,
+    generated: &BTreeSet<String>,
+    clearing: Clearing,
+) -> Result<()> {
+    // Which messages, in any file, have such a field at any depth --
     // settled the same way `plan` settles its set, but over every file.
     let all: Vec<&Message> = index.all().collect();
     let mut dirty: BTreeSet<String> = all
         .iter()
-        .filter(|message| message.fields.iter().any(|field| field.output_only))
+        .filter(|message| message.fields.iter().any(|field| clearing.marks(field)))
         .map(|message| message.fqn.clone())
         .collect();
     loop {
@@ -111,7 +169,7 @@ fn check_unreachable(index: &Index, generated: &BTreeSet<String>) -> Result<()> 
             if message
                 .fields
                 .iter()
-                .filter_map(carried)
+                .filter_map(|field| carried(field, clearing))
                 .any(|target| dirty.contains(&target))
             {
                 dirty.insert(message.fqn.clone());
@@ -125,7 +183,7 @@ fn check_unreachable(index: &Index, generated: &BTreeSet<String>) -> Result<()> 
 
     for message in generated.iter().flat_map(|file| index.in_file(file)) {
         for field in &message.fields {
-            let Some(target) = carried(field) else {
+            let Some(target) = carried(field, clearing) else {
                 continue;
             };
             let Some(held) = index.get(&target) else {
@@ -133,12 +191,14 @@ fn check_unreachable(index: &Index, generated: &BTreeSet<String>) -> Result<()> 
             };
             if !generated.contains(&held.source_file) && dirty.contains(&target) {
                 bail!(
-                    "{}.{}: holds {}, which has OUTPUT_ONLY fields beneath it, but {} is not \
-                     being generated, so clear_output_only cannot reach them; generate {} too",
+                    "{}.{}: holds {}, which has {} fields beneath it, but {} is not \
+                     being generated, so {} cannot reach them; generate {} too",
                     message.fqn.trim_start_matches('.'),
                     field.name,
                     target.trim_start_matches('.'),
+                    clearing.annotation(),
                     held.source_file,
+                    clearing.method(),
                     held.source_file,
                 );
             }
@@ -149,8 +209,8 @@ fn check_unreachable(index: &Index, generated: &BTreeSet<String>) -> Result<()> 
 
 /// The message a field carries, if any, whichever file it is in. Unlike
 /// [`reachable`], which only answers for messages the walk can enter.
-fn carried(field: &Field) -> Option<String> {
-    if field.output_only {
+fn carried(field: &Field, clearing: Clearing) -> Option<String> {
+    if clearing.marks(field) {
         return None;
     }
     if field.is_map {
@@ -164,10 +224,15 @@ fn carried(field: &Field) -> Option<String> {
 
 /// The message a field can carry a walk into, if any.
 ///
-/// A field that is itself `OUTPUT_ONLY` is not one: it is about to be cleared
-/// wholesale, so there is nothing beneath it worth visiting.
-fn reachable(field: &Field, index: &Index, generated: &BTreeSet<String>) -> Option<String> {
-    if field.output_only {
+/// A field that itself carries the behavior is not one: it is about to be
+/// cleared wholesale, so there is nothing beneath it worth visiting.
+fn reachable(
+    field: &Field,
+    index: &Index,
+    generated: &BTreeSet<String>,
+    clearing: Clearing,
+) -> Option<String> {
+    if clearing.marks(field) {
         return None;
     }
     let target = if field.is_map {
@@ -207,6 +272,8 @@ fn emit_message(
         .rust_path
         .parse()
         .expect("a message path built from proto identifiers is a valid Rust path");
+    let clearing = walks.clearing;
+    let method = format_ident!("{}", clearing.method());
 
     // A oneof is one field on the struct, so its members are handled together
     // rather than one at a time.
@@ -217,12 +284,12 @@ fn emit_message(
             oneofs.entry(oneof).or_default().push(field);
             continue;
         }
-        if field.output_only {
+        if clearing.marks(field) {
             statements.push(clear(field));
-        } else if let Some(target) = reachable(field, index, generated)
+        } else if let Some(target) = reachable(field, index, generated, clearing)
             && walks.contains(&target)
         {
-            statements.push(descend(field));
+            statements.push(descend(field, &method));
         }
     }
     for (oneof, fields) in oneofs {
@@ -231,25 +298,27 @@ fn emit_message(
         ));
     }
 
+    let annotation = clearing.annotation();
     let cleared: Vec<&str> = message
         .fields
         .iter()
-        .filter(|field| field.output_only)
+        .filter(|field| clearing.marks(field))
         .map(|field| field.name.as_str())
         .collect();
     let summary = if cleared.is_empty() {
-        "It has no `OUTPUT_ONLY` fields of its own; the walk is emitted because \
-         a message beneath it does."
-            .to_owned()
+        format!(
+            "It has no `{annotation}` fields of its own; the walk is emitted because \
+             a message beneath it does."
+        )
     } else {
         format!("Clears: `{}`.", cleared.join("`, `"))
     };
     let doc = super::doc(&format!(
-        "Clears every field annotated `OUTPUT_ONLY`, at any depth.\n\n\
+        "Clears every field annotated `{annotation}`, at any depth.\n\n\
          {summary}\n\n\
-         Call it on an inbound request to drop server-owned values a client \
-         should not be able to set, rather than rejecting the request.\n\n\
+         {}\n\n\
          See <https://google.aip.dev/203>.",
+        clearing.purpose(),
     ));
 
     // `Default::default()` rather than a named type per field: that is what
@@ -263,7 +332,7 @@ fn emit_message(
         )]
         impl #path {
             #doc
-            pub fn clear_output_only(&mut self) {
+            pub fn #method(&mut self) {
                 #( #statements )*
             }
         }
@@ -279,30 +348,30 @@ fn clear(field: &Field) -> TokenStream {
 }
 
 /// Recurses into whatever messages a field carries.
-fn descend(field: &Field) -> TokenStream {
+fn descend(field: &Field, method: &proc_macro2::Ident) -> TokenStream {
     let ident = buffa_codegen::idents::make_field_ident(&field.name);
     if field.is_map {
         quote! {
             for value in self.#ident.values_mut() {
-                value.clear_output_only();
+                value.#method();
             }
         }
     } else if field.repeated {
         quote! {
             for item in &mut self.#ident {
-                item.clear_output_only();
+                item.#method();
             }
         }
     } else if field.optional {
         quote! {
             if let ::core::option::Option::Some(value) = self.#ident.as_mut() {
-                value.clear_output_only();
+                value.#method();
             }
         }
     } else {
         quote! {
             if let ::core::option::Option::Some(value) = self.#ident.as_option_mut() {
-                value.clear_output_only();
+                value.#method();
             }
         }
     }
@@ -310,7 +379,7 @@ fn descend(field: &Field) -> TokenStream {
 
 /// Handles a real `oneof`, whose members share one `Option<Enum>` field.
 ///
-/// An `OUTPUT_ONLY` member cannot be cleared on its own — there is no field to
+/// A member carrying the behavior cannot be cleared on its own — there is no field to
 /// assign to — so the oneof is cleared entirely when that member is the one
 /// set. Any other member that carries a message is descended into instead.
 fn clear_oneof(
@@ -330,9 +399,11 @@ fn clear_oneof(
     .parse()
     .expect("a oneof path built from proto identifiers is a valid Rust path");
 
+    let clearing = walks.clearing;
+    let method = format_ident!("{}", clearing.method());
     let clears: Vec<TokenStream> = fields
         .iter()
-        .filter(|field| field.output_only)
+        .filter(|field| clearing.marks(field))
         .map(|field| {
             let variant = variant_ident(&field.name);
             quote! { ::core::option::Option::Some(#enum_path::#variant(_)) }
@@ -342,7 +413,8 @@ fn clear_oneof(
     let descents: Vec<TokenStream> = fields
         .iter()
         .filter(|field| {
-            reachable(field, index, generated).is_some_and(|target| walks.contains(&target))
+            reachable(field, index, generated, clearing)
+                .is_some_and(|target| walks.contains(&target))
         })
         .map(|field| {
             let variant = variant_ident(&field.name);
@@ -350,7 +422,7 @@ fn clear_oneof(
                 if let ::core::option::Option::Some(#enum_path::#variant(value)) =
                     &mut self.#ident
                 {
-                    value.clear_output_only();
+                    value.#method();
                 }
             }
         })
@@ -394,13 +466,13 @@ mod tests {
     use super::*;
     use crate::annotations::google::api::{FIELD_BEHAVIOR, FieldBehavior};
 
-    /// `dep.proto` declares `dep.Audit` with an `OUTPUT_ONLY` `create_time`;
-    /// `api.proto` declares `api.Thing` holding one. Only `api.proto` is
-    /// generated.
-    fn request(audit_has_output_only: bool) -> CodeGeneratorRequest {
+    /// `dep.proto` declares `dep.Audit` with a `create_time` carrying
+    /// `behavior`; `api.proto` declares `api.Thing` holding one. Only
+    /// `api.proto` is generated.
+    fn request(behavior: Option<FieldBehavior>) -> CodeGeneratorRequest {
         let mut options = FieldOptions::default();
-        if audit_has_output_only {
-            options.set_extension(&FIELD_BEHAVIOR, vec![FieldBehavior::OUTPUT_ONLY as i32]);
+        if let Some(behavior) = behavior {
+            options.set_extension(&FIELD_BEHAVIOR, vec![behavior as i32]);
         }
         let audit = FileDescriptorProto {
             name: Some("dep.proto".to_owned()),
@@ -445,17 +517,20 @@ mod tests {
         }
     }
 
-    fn plan_for(request: &CodeGeneratorRequest) -> Result<Walks> {
+    fn plan_for(request: &CodeGeneratorRequest, clearing: Clearing) -> Result<Walks> {
         let index = crate::messages::gather(request);
         let generated = request.file_to_generate.iter().cloned().collect();
-        plan(&index, &generated)
+        plan(&index, &generated, clearing)
     }
 
     #[test]
     fn output_only_fields_in_a_dependency_fail_generation() {
-        let error = plan_for(&request(true))
-            .err()
-            .expect("an unreachable OUTPUT_ONLY field");
+        let error = plan_for(
+            &request(Some(FieldBehavior::OUTPUT_ONLY)),
+            Clearing::OutputOnly,
+        )
+        .err()
+        .expect("an unreachable OUTPUT_ONLY field");
         assert_eq!(
             error.to_string(),
             "api.Thing.audit: holds dep.Audit, which has OUTPUT_ONLY fields beneath it, but \
@@ -465,7 +540,31 @@ mod tests {
     }
 
     #[test]
+    fn input_only_fields_in_a_dependency_fail_generation_too() {
+        let error = plan_for(
+            &request(Some(FieldBehavior::INPUT_ONLY)),
+            Clearing::InputOnly,
+        )
+        .err()
+        .expect("an unreachable INPUT_ONLY field");
+        assert_eq!(
+            error.to_string(),
+            "api.Thing.audit: holds dep.Audit, which has INPUT_ONLY fields beneath it, but \
+             dep.proto is not being generated, so clear_input_only cannot reach them; \
+             generate dep.proto too"
+        );
+    }
+
+    #[test]
+    fn each_walk_reaches_only_its_own_behavior() {
+        let output_only = request(Some(FieldBehavior::OUTPUT_ONLY));
+        assert!(plan_for(&output_only, Clearing::InputOnly).is_ok());
+        let input_only = request(Some(FieldBehavior::INPUT_ONLY));
+        assert!(plan_for(&input_only, Clearing::OutputOnly).is_ok());
+    }
+
+    #[test]
     fn a_dependency_with_nothing_output_only_is_fine() {
-        assert!(plan_for(&request(false)).is_ok());
+        assert!(plan_for(&request(None), Clearing::OutputOnly).is_ok());
     }
 }

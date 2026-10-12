@@ -138,7 +138,7 @@ fn negative_zero_is_populated() {
     assert_eq!(meter.implied_update_mask(), ["level"]);
 }
 
-// --- immutable_changes ------------------------------------------------------
+// --- changed_immutable_paths ------------------------------------------------------
 
 #[test]
 fn a_changed_immutable_field_is_reported() {
@@ -150,7 +150,7 @@ fn a_changed_immutable_field_is_reported() {
         serial: "s2".to_owned(),
         ..Default::default()
     };
-    assert_eq!(update.immutable_changes(&stored), ["serial"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["serial"]);
 }
 
 #[test]
@@ -160,9 +160,9 @@ fn an_echoed_or_unset_immutable_field_is_not() {
         ..Default::default()
     };
     // Echoed back unchanged.
-    assert!(stored.clone().immutable_changes(&stored).is_empty());
+    assert!(stored.clone().changed_immutable_paths(&stored).is_empty());
     // Left unset by the update.
-    assert!(Meter::default().immutable_changes(&stored).is_empty());
+    assert!(Meter::default().changed_immutable_paths(&stored).is_empty());
 }
 
 #[test]
@@ -177,5 +177,228 @@ fn an_output_only_immutable_field_is_left_to_clearing() {
         etag: "e1".to_owned(),
         ..Default::default()
     };
-    assert!(update.immutable_changes(&stored).is_empty());
+    assert!(update.changed_immutable_paths(&stored).is_empty());
+}
+
+// --- changed_immutable_paths: UNORDERED_LIST --------------------------------
+
+use aip_fixture::proto::example::v1::{Destination, Geo, Node, Order, order};
+use buffa::MessageField;
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|&value| value.to_owned()).collect()
+}
+
+fn order_with_lists(legs: &[&str], tags: &[&str]) -> Order {
+    Order {
+        legs: strings(legs),
+        tags: strings(tags),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_unordered_list_in_another_order_is_unchanged() {
+    let stored = order_with_lists(&[], &["a", "b", "c"]);
+    let update = order_with_lists(&[], &["c", "a", "b"]);
+    assert!(update.changed_immutable_paths(&stored).is_empty());
+}
+
+#[test]
+fn an_unordered_list_compares_as_a_multiset() {
+    let stored = order_with_lists(&[], &["a", "a", "b"]);
+    // Same elements once each, different counts.
+    let update = order_with_lists(&[], &["a", "b", "b"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+    // A different length.
+    let update = order_with_lists(&[], &["a", "b"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+    // A different element.
+    let update = order_with_lists(&[], &["a", "a", "c"]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["tags"]);
+}
+
+#[test]
+fn an_ordered_list_in_another_order_is_changed() {
+    let stored = order_with_lists(&["x", "y"], &[]);
+    let update = order_with_lists(&["y", "x"], &[]);
+    assert_eq!(update.changed_immutable_paths(&stored), ["legs"]);
+}
+
+// --- missing_required_paths -------------------------------------------------
+
+fn destination(city: &str, latitude: Option<f64>) -> Destination {
+    Destination {
+        city: city.to_owned(),
+        geo: match latitude {
+            Some(latitude) => Geo {
+                latitude,
+                ..Default::default()
+            }
+            .into(),
+            None => MessageField::none(),
+        },
+        ..Default::default()
+    }
+}
+
+/// An order that sets every REQUIRED field, at every depth it is checked.
+fn complete() -> Order {
+    Order {
+        title: "t".to_owned(),
+        confirmed: true,
+        quantity: Some(1),
+        destination: destination("Sofia", Some(42.7)).into(),
+        stops: vec![Destination::default()],
+        ..Default::default()
+    }
+}
+
+fn mask(paths: &[&str]) -> Vec<String> {
+    strings(paths)
+}
+
+#[test]
+fn a_create_must_set_every_required_field() {
+    assert_eq!(
+        Order::default().missing_required_paths(None),
+        ["title", "confirmed", "quantity", "destination", "stops"]
+    );
+    assert!(complete().missing_required_paths(None).is_empty());
+}
+
+#[test]
+fn reads_presence_as_protobuf_does_for_required() {
+    let order = Order {
+        // Explicit presence: zero is set.
+        quantity: Some(0),
+        // Implicit presence: a REQUIRED bool must be true.
+        confirmed: false,
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["confirmed"]);
+}
+
+#[test]
+fn descends_into_a_set_message_at_any_depth() {
+    let order = Order {
+        destination: destination("", Some(0.0)).into(),
+        ..complete()
+    };
+    assert_eq!(
+        order.missing_required_paths(None),
+        ["destination.city", "destination.geo.latitude"]
+    );
+}
+
+#[test]
+fn a_nested_message_is_checked_only_when_set() {
+    // `billing` is not REQUIRED: unset, nothing beneath it is checked; set, its
+    // own REQUIRED fields apply. Its `geo` is unset, so it is not entered.
+    assert!(complete().missing_required_paths(None).is_empty());
+    let order = Order {
+        billing: destination("", None).into(),
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["billing.city"]);
+}
+
+#[test]
+fn a_repeated_field_is_present_when_not_empty_and_never_entered() {
+    // `complete` holds one empty Destination in `stops`: its missing city is
+    // not reported.
+    assert!(complete().missing_required_paths(None).is_empty());
+}
+
+#[test]
+fn enters_the_oneof_member_that_is_set() {
+    let order = Order {
+        payment: Some(order::Payment::Voucher(Box::default())),
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["voucher.code"]);
+
+    let order = Order {
+        payment: Some(order::Payment::Card(String::new())),
+        ..complete()
+    };
+    assert!(order.missing_required_paths(None).is_empty());
+}
+
+#[test]
+fn enters_a_recursive_message_once_per_path() {
+    let order = Order {
+        root: MessageField::some(Node {
+            child: MessageField::some(Node::default()),
+            ..Default::default()
+        }),
+        ..complete()
+    };
+    assert_eq!(order.missing_required_paths(None), ["root.label"]);
+}
+
+#[test]
+fn an_update_checks_only_the_fields_its_mask_names() {
+    // Nothing REQUIRED is set, but only `title` is named.
+    let paths = mask(&["title"]);
+    assert_eq!(
+        Order::default().missing_required_paths(Some(&paths)),
+        ["title"]
+    );
+    // A mask naming no REQUIRED field asks for none.
+    let paths = mask(&["billing", "legs"]);
+    assert!(
+        Order::default()
+            .missing_required_paths(Some(&paths))
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_mask_naming_a_message_checks_everything_beneath_it() {
+    let order = Order {
+        destination: destination("", Some(0.0)).into(),
+        ..Default::default()
+    };
+    let paths = mask(&["destination"]);
+    assert_eq!(
+        order.missing_required_paths(Some(&paths)),
+        ["destination.city", "destination.geo.latitude"]
+    );
+}
+
+#[test]
+fn a_nested_path_checks_just_that_field() {
+    let order = Order {
+        destination: destination("", Some(0.0)).into(),
+        ..Default::default()
+    };
+    let paths = mask(&["destination.city"]);
+    assert_eq!(
+        order.missing_required_paths(Some(&paths)),
+        ["destination.city"]
+    );
+    let paths = mask(&["destination.geo"]);
+    assert_eq!(
+        order.missing_required_paths(Some(&paths)),
+        ["destination.geo.latitude"]
+    );
+}
+
+#[test]
+fn takes_a_field_mask_paths_as_they_are() {
+    // The owned `FieldMask` holds `Vec<String>`: a request's mask is passed
+    // with no conversion.
+    let update_mask = buffa_types::google::protobuf::FieldMask {
+        paths: mask(&["title", "confirmed"]),
+        ..Default::default()
+    };
+    let order = Order {
+        title: "t".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        order.missing_required_paths(Some(&update_mask.paths)),
+        ["confirmed"]
+    );
 }
