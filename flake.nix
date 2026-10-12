@@ -41,12 +41,6 @@
 
           cargoLock.lockFile = ./Cargo.lock;
 
-          # `build.rs` compiles the vendored google/api annotations, so protoc
-          # is needed to build and not only to develop. Named outright rather
-          # than left to a PATH search, which the build sandbox would lose.
-          nativeBuildInputs = [ pkgs.protobuf ];
-          env.PROTOC = "${pkgs.protobuf}/bin/protoc";
-
           # Only the plugin. The other workspace member is the fixture, which
           # exists to regenerate and type-check the test schema and has no place
           # in the binary being shipped.

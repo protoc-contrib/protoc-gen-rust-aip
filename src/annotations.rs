@@ -1,4 +1,6 @@
-//! The vendored `google.api` annotation types, compiled by `build.rs`.
+//! The vendored `google.api` annotation types, generated from `proto/` and
+//! committed under `src/generated`, so building the plugin needs no `protoc`.
+//! `tests/generated.rs` fails if they drift.
 //!
 //! This is `buffa-build` output verbatim; the crate's lints are switched off
 //! for it rather than fought with.
@@ -13,4 +15,4 @@
     reason = "generated code emits unused-import and dead-code warnings for the parts of the annotations this plugin does not read"
 )]
 
-include!(concat!(env!("OUT_DIR"), "/_include.rs"));
+include!("generated/_include.rs");

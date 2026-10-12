@@ -358,9 +358,6 @@ flake:
 cargo install protoc-gen-rust-aip
 ```
 
-The build compiles the vendored `google/api` annotation protos, so it needs
-`protoc` — on `PATH`, or named by `PROTOC`.
-
 Run it as a **local** plugin. The Rust template already does this for
 `protoc-gen-protovalidate-buffa`, which likewise publishes no BSR entry:
 
@@ -514,6 +511,15 @@ open the repo in a devcontainer and the same `nix develop` works.
 `cargo test --workspace` regenerates the schema in `tests/proto` through both
 `buffa` and this plugin, so a change to an emitter is compiled and exercised
 rather than only diffed.
+
+`src/generated` is buffa's output for the vendored `google/api` annotations in
+`proto/`, committed so installing the plugin needs no `protoc`. A test fails if
+it drifts from a fresh generation. After changing a proto or the buffa
+version, regenerate it with:
+
+```bash
+UPDATE_GENERATED=1 cargo test --test generated
+```
 
 ## License
 
