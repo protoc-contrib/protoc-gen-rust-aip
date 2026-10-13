@@ -88,6 +88,9 @@ fn main() -> Result<()> {
             // them too -- which is what a connectrpc handler holds.
             views: true,
             allow_unresolved_refs: false,
+            // On, so the ResourceWrites impls and the PROCEDURES table are
+            // type-checked against aip-rs's connect API.
+            connect: true,
         },
     )?;
 

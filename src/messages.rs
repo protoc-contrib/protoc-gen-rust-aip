@@ -148,8 +148,26 @@ pub struct Method {
     pub output: String,
     /// The file the service declaring the method is in.
     pub file: String,
+    /// The proto package of that file, e.g. `example.v1`.
+    pub package: String,
+    /// The service's name, e.g. `Orders`.
+    pub service: String,
+    /// The method's name, e.g. `CreateOrder`.
+    pub name: String,
     /// Whether either side streams.
     pub streaming: bool,
+}
+
+impl Method {
+    /// The Connect procedure path, e.g. `/example.v1.Orders/CreateOrder`.
+    #[must_use]
+    pub fn procedure(&self) -> String {
+        if self.package.is_empty() {
+            format!("/{}/{}", self.service, self.name)
+        } else {
+            format!("/{}.{}/{}", self.package, self.service, self.name)
+        }
+    }
 }
 
 /// Every message and method in the request.
@@ -215,6 +233,9 @@ fn walk_file(file: &FileDescriptorProto, index: &mut Index) {
                 input,
                 output,
                 file: source_file.clone(),
+                package: package.clone(),
+                service: service.name.clone().unwrap_or_default(),
+                name: method.name.clone().unwrap_or_default(),
                 streaming: method.client_streaming.unwrap_or(false)
                     || method.server_streaming.unwrap_or(false),
             });

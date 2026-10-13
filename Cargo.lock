@@ -22,7 +22,9 @@ dependencies = [
  "buffa-codegen",
  "buffa-types",
  "cel",
+ "connectrpc",
  "protoc-gen-rust-aip",
+ "protovalidate-buffa",
  "uuid",
 ]
 
