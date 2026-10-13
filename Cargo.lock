@@ -20,8 +20,10 @@ dependencies = [
 [[package]]
 name = "aip-rs"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06305069df23113ec25b7c27652b1786b7a9985d93375f9c931f9fcf00f33408"
+source = "git+https://github.com/protoc-contrib/aip-rs?rev=638f6d06306ee79f078eb6e5027d9b61645a3d70#638f6d06306ee79f078eb6e5027d9b61645a3d70"
+dependencies = [
+ "buffa-types",
+]
 
 [[package]]
 name = "android_system_properties"

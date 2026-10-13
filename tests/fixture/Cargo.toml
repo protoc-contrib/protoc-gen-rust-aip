@@ -22,7 +22,11 @@ buffa-types = "0.9.2"
 # A sibling checkout would be quicker to iterate against, but it makes a
 # standalone clone of this repo unbuildable, which is exactly what this crate
 # exists to prove is not the case.
-aip = { package = "aip-rs", version = "0.4" }
+#
+# Temporarily from git: the generated code implements the FieldBehavior and
+# Resource API of aip-rs#19, not yet released. Back to a crates.io version once
+# it is, before this crate's next release.
+aip = { package = "aip-rs", version = "0.4", git = "https://github.com/protoc-contrib/aip-rs", rev = "638f6d06306ee79f078eb6e5027d9b61645a3d70" }
 # Only a schema that annotates an ID as UUID4 needs this; the plugin names the
 # crate in generated code exactly when it types a segment as one. Parsing is
 # all it does -- minting an ID is the server's -- so no feature is needed.
