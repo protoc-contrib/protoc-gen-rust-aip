@@ -1,13 +1,13 @@
 {
   "assets": {
     "aarch64-darwin": {
-      "hash": "sha256-exRnLnUMRwCI/l20wmgE7CWJ5D2Tp0SwYJXQBO4gMlc=",
-      "url": "https://github.com/protoc-contrib/protoc-gen-rust-aip/releases/download/v0.6.1/protoc-gen-rust-aip-aarch64-darwin"
+      "hash": "sha256-5D5wfitkr691A/4AF926nW6ttfk//SSZ64Btgu9X8fs=",
+      "url": "https://github.com/protoc-contrib/protoc-gen-rust-aip/releases/download/v0.7.0/protoc-gen-rust-aip-aarch64-darwin"
     },
     "x86_64-linux": {
-      "hash": "sha256-sr+J+HcSzPp2FfMF8ERZ66cJL29AeFmAdtLrluugA6c=",
-      "url": "https://github.com/protoc-contrib/protoc-gen-rust-aip/releases/download/v0.6.1/protoc-gen-rust-aip-x86_64-linux"
+      "hash": "sha256-jY44QNYcnLlIaJUlHkyCvrbBCaOlt+DD7BL/6JCL944=",
+      "url": "https://github.com/protoc-contrib/protoc-gen-rust-aip/releases/download/v0.7.0/protoc-gen-rust-aip-x86_64-linux"
     }
   },
-  "version": "0.6.1"
+  "version": "0.7.0"
 }
