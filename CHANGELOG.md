@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.6.1...v0.7.0) (2026-10-14)
+
+
+### Features
+
+* emit parse_filter on request views too ([#54](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/54)) ([f6aa93e](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/f6aa93ec09a5999d27c6ac3e1ab5a1e5d566b6e5))
+
 ## [0.6.1](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.6.0...v0.6.1) (2026-10-14)
 
 
