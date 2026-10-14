@@ -165,7 +165,7 @@ pub fn render(
             behavior::emit_file(name, index, &clear, &validate, &generated),
         );
         let resource_impls = field_mask::emit_file(name, index, registry);
-        let filters = filter::emit_file(name, index, &lists);
+        let filters = filter::emit_file(name, index, &lists, options.views);
         let interceptor = if options.connect {
             connect::emit_file(name, index, registry, &generated)?
         } else {
