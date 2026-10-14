@@ -3,7 +3,7 @@
 
 use std::io::{self, Read, Write};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use buffa::Message;
 use buffa_codegen::generated::{
     compiler::{CodeGeneratorRequest, CodeGeneratorResponse, code_generator_response::File},
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
 }
 
 fn run(request: &CodeGeneratorRequest) -> Result<Vec<File>> {
-    let options = parse_options(request.parameter.as_deref().unwrap_or_default());
+    let options = parse_options(request.parameter.as_deref().unwrap_or_default())?;
     let registry = scan::gather(request, options.allow_unresolved_refs)?;
     let index = messages::gather(request);
     emit::render(request, &registry, &index, &options)
@@ -54,94 +54,135 @@ fn run(request: &CodeGeneratorRequest) -> Result<Vec<File>> {
 /// Parses the comma-separated `key=value` list protoc and buf pass as the
 /// plugin parameter.
 ///
-/// An unknown key is ignored rather than rejected, so a `buf.gen.yaml` written
-/// against a later version of this plugin still works against this one. A
-/// boolean whose value is neither `true` nor `false` is ignored the same way,
-/// and keeps the default.
-fn parse_options(parameter: &str) -> emit::Options {
+/// Strict, as protoc-gen-go-aip's flags are: a key this plugin does not know
+/// -- a typo such as `view=true` -- and a boolean that is neither `true` nor
+/// `false` fail generation, naming the option, rather than leaving a default
+/// in place that the `buf.gen.yaml` meant to change.
+///
+/// # Errors
+///
+/// For an option with no `=`, an unknown key, or a boolean option whose
+/// value is not `true` or `false`.
+fn parse_options(parameter: &str) -> Result<emit::Options> {
     let mut options = emit::Options::default();
-    for part in parameter.split(',') {
-        let Some((key, value)) = part.trim().split_once('=') else {
-            continue;
+    for part in parameter
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let Some((key, value)) = part.split_once('=') else {
+            bail!("option {part:?} has no value: write {part}=<value>");
         };
-        match key.trim() {
-            "proto_module" => value.trim().clone_into(&mut options.proto_module),
-            "packaging" => {
-                if let Ok(value) = value.trim().parse() {
-                    options.packaging = value;
-                }
+        let (key, value) = (key.trim(), value.trim());
+        let flag = match key {
+            "proto_module" => {
+                value.clone_into(&mut options.proto_module);
+                continue;
             }
-            "views" => {
-                if let Ok(value) = value.trim().parse() {
-                    options.views = value;
-                }
-            }
-            "allow_unresolved_refs" => {
-                if let Ok(value) = value.trim().parse() {
-                    options.allow_unresolved_refs = value;
-                }
-            }
-            "connect" => {
-                if let Ok(value) = value.trim().parse() {
-                    options.connect = value;
-                }
-            }
-            _ => {}
-        }
+            "packaging" => &mut options.packaging,
+            "views" => &mut options.views,
+            "allow_unresolved_refs" => &mut options.allow_unresolved_refs,
+            "connect" => &mut options.connect,
+            _ => bail!(
+                "unknown option {key:?}: want proto_module, packaging, views, \
+                 allow_unresolved_refs or connect"
+            ),
+        };
+        *flag = value
+            .parse()
+            .map_err(|_| anyhow!("option {key}: {value:?} is not a boolean, want true or false"))?;
     }
-    options
+    Ok(options)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn defaults_the_proto_module() {
-        assert_eq!(parse_options("").proto_module, "crate::proto");
+    fn options(parameter: &str) -> emit::Options {
+        parse_options(parameter).expect("valid options")
+    }
+
+    fn refused(parameter: &str) -> String {
+        format!(
+            "{:#}",
+            parse_options(parameter).expect_err("invalid options")
+        )
     }
 
     #[test]
-    fn reads_the_proto_module_past_unknown_keys() {
-        let options = parse_options("later_option=on,proto_module=crate::buffa,bare_flag");
-        assert_eq!(options.proto_module, "crate::buffa");
+    fn defaults_the_proto_module() {
+        assert_eq!(options("").proto_module, "crate::proto");
+    }
+
+    #[test]
+    fn reads_the_proto_module() {
+        assert_eq!(
+            options("proto_module=crate::buffa").proto_module,
+            "crate::buffa"
+        );
+    }
+
+    #[test]
+    fn skips_empty_entries_and_whitespace() {
+        let options = options(" packaging = false ,, views=true,");
+        assert!(!options.packaging);
+        assert!(options.views);
     }
 
     #[test]
     fn emits_the_packaging_tree_unless_asked_not_to() {
-        assert!(parse_options("").packaging);
-        assert!(parse_options("packaging=true").packaging);
-        assert!(!parse_options("proto_module=crate::buffa,packaging=false").packaging);
+        assert!(options("").packaging);
+        assert!(options("packaging=true").packaging);
+        assert!(!options("proto_module=crate::buffa,packaging=false").packaging);
     }
 
     #[test]
     fn view_accessors_are_off_unless_asked_for() {
         // Off by default: a view type this schema did not generate is a
         // compile error in the consumer, not a missing method.
-        assert!(!parse_options("").views);
-        assert!(parse_options("views=true").views);
-        assert!(!parse_options("views=false").views);
+        assert!(!options("").views);
+        assert!(options("views=true").views);
+        assert!(!options("views=false").views);
     }
 
     #[test]
     fn unresolved_references_fail_unless_allowed() {
-        assert!(!parse_options("").allow_unresolved_refs);
-        assert!(parse_options("allow_unresolved_refs=true").allow_unresolved_refs);
-        assert!(!parse_options("allow_unresolved_refs=false").allow_unresolved_refs);
+        assert!(!options("").allow_unresolved_refs);
+        assert!(options("allow_unresolved_refs=true").allow_unresolved_refs);
+        assert!(!options("allow_unresolved_refs=false").allow_unresolved_refs);
     }
 
     #[test]
     fn emits_the_interceptor_impls_unless_asked_not_to() {
-        assert!(parse_options("").connect);
-        assert!(parse_options("connect=true").connect);
-        assert!(!parse_options("connect=false").connect);
+        assert!(options("").connect);
+        assert!(options("connect=true").connect);
+        assert!(!options("connect=false").connect);
     }
 
     #[test]
-    fn a_packaging_value_that_is_not_a_bool_keeps_the_default() {
-        // The same forgiving reading unknown keys get: a `buf.gen.yaml` is not
-        // worth failing a build over, and the default is the safe direction --
-        // an unused mod.rs, rather than a missing one.
-        assert!(parse_options("packaging=no").packaging);
+    fn an_unknown_option_is_refused_by_name() {
+        let error = refused("packaging=false,view=true");
+        assert!(error.starts_with(r#"unknown option "view""#), "{error}");
+    }
+
+    #[test]
+    fn a_boolean_option_that_is_not_a_bool_is_refused() {
+        assert_eq!(
+            refused("views=yes"),
+            r#"option views: "yes" is not a boolean, want true or false"#
+        );
+        assert_eq!(
+            refused("packaging=no"),
+            r#"option packaging: "no" is not a boolean, want true or false"#
+        );
+    }
+
+    #[test]
+    fn an_option_without_a_value_is_refused() {
+        assert_eq!(
+            refused("views"),
+            r#"option "views" has no value: write views=<value>"#
+        );
     }
 }
