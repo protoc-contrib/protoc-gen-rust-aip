@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.5.0...v0.6.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* the generated FieldBehavior impls no longer have MUTABLE_PATHS, implied_update_mask, validate_required_fields, validate_immutable, validate_required, imply_resource_name, imply_update_mask, clear_output_only or clear_input_only. Use clear_fields(kind), validate_fields(kind, scope) and Resource::implied_field_mask.
+
+### Features
+
+* generate clear_fields and validate_fields by kind, and aip::Resource ([#46](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/46)) ([26c15b6](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/26c15b6f49d0158c5baddd8be02c7f7d69cf0865))
+* generate ResourceWrites and PROCEDURES for the interceptor ([#47](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/47)) ([263befd](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/263befd0ecef0a548a2f91497c5958ba7be260a8))
+
 ## [0.5.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.4.0...v0.5.0) (2026-10-12)
 
 
