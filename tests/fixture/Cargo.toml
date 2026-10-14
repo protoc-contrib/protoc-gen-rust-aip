@@ -32,6 +32,15 @@ uuid = "1"
 # environment. The generated code needs no features; `chrono` is for the tests,
 # which build a `Volume` with a `timestamp(...)` and a `duration(...)` in it.
 cel = { version = "0.15", default-features = false, features = ["chrono"] }
+# The PROCEDURES table names each unary request as an
+# `aip::connect::PreparedRequest`, which takes protovalidate-buffa's `Validate`.
+# A consumer generates it with protoc-gen-protovalidate-buffa; the fixture
+# writes the few impls its requests need by hand, in src/lib.rs.
+protovalidate-buffa = "0.7.2"
+
+[dev-dependencies]
+# The error `aip::connect::prepare` refuses a request with.
+connectrpc = { version = "0.9", default-features = false }
 
 [build-dependencies]
 # The plugin as a library rather than as a `protoc` plugin binary: a build

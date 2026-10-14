@@ -10,6 +10,7 @@ package example.v1;
 
 import "google/api/field_behavior.proto";
 import "google/api/resource.proto";
+import "google/protobuf/empty.proto";
 import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -171,27 +172,42 @@ message Node {
   Node child = 2;
 }
 
-// AIP standard method requests for `validate_required`, `imply_resource_name`
-// and `imply_update_mask`, generated on a service's create, update and batch
-// requests -- and on the entries of a batch -- and on nothing else.
+// AIP standard method requests, for `aip::ResourceWrites`: generated on a
+// service's create, update and batch requests -- and on the entries of a
+// batch -- with the writes of their shape, and empty on every other request.
+// The service's methods, unary and streaming, make the package's PROCEDURES;
+// DeleteOrder and PurgeOrders take or return a well-known type.
 service Orders {
   rpc CreateOrder(CreateOrderRequest) returns (Order);
   rpc CreateLine(CreateLineRequest) returns (Line);
   rpc UpdateOrder(UpdateOrderRequest) returns (Order);
   rpc BatchCreateOrders(BatchCreateOrdersRequest) returns (BatchOrdersResponse);
   rpc BatchUpdateOrders(BatchUpdateOrdersRequest) returns (BatchOrdersResponse);
+  rpc WatchOrders(WatchOrdersRequest) returns (stream Order);
+  rpc DeleteOrder(DeleteOrderRequest) returns (google.protobuf.Empty);
+  rpc PurgeOrders(google.protobuf.Empty) returns (google.protobuf.Empty);
 }
 
-// A create: a resource field and no update_mask. Its `order_id` names the
-// order under its top-level pattern.
+// No standard-method shape the interceptor fills in: it writes nothing.
+message DeleteOrderRequest {
+  string name = 1;
+}
+
+// A streaming method's request: no standard-method shape, so it writes nothing.
+message WatchOrdersRequest {
+  string parent = 1;
+}
+
+// A create: a resource field and no update_mask. Its `order_id` is filled in
+// when omitted; the handler names the order from it.
 message CreateOrderRequest {
   string parent = 1;
   Order order = 2;
   string order_id = 3;
 }
 
-// A resource under a nested pattern, whose own `parent` the server copies from
-// the create request.
+// A resource under a nested pattern, with an OUTPUT_ONLY `parent` of its own,
+// which the handler sets: the interceptor only clears it.
 message Line {
   option (google.api.resource) = {
     type: "example.com/Line"
@@ -203,7 +219,8 @@ message Line {
   string sku = 3 [(google.api.field_behavior) = REQUIRED];
 }
 
-// A create under a parent: the line is named `<parent>/lines/<line_id>`.
+// A create under a parent: the handler names the line
+// `<parent>/lines/<line_id>`.
 message CreateLineRequest {
   string parent = 1;
   string line_id = 2;

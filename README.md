@@ -27,11 +27,14 @@ Every pass is implemented.
 | `impl aip::FieldBehavior` on every message: `clear_fields(kind)`, `validate_fields(kind, scope)` | AIP-203: unset the fields of a behavior, recursive through singular, repeated, map and oneof fields; report those of them a `FieldScope` contains that are unset, recursive through singular and oneof fields. One arm per kind a message carries; an empty impl, the trait's "nothing to do" defaults, when it carries none |
 | `impl aip::Resource` on every resource: `type Name`, `parse_name`, `implied_field_mask` | AIP-122/134: the typed name, and the field mask an update of the resource implies when it omits one |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
+| `impl aip::ResourceWrites` on every request, a `PROCEDURES` table per package (`connect=true`, the default) | AIP-133/134/233/235: the resources a create, update or batch request writes, and each method's message types, which aip-rs's `FieldBehaviorInterceptor` is driven by |
 
 Which operation a service applies, with which kind, to which message of a
 request — `REQUIRED` checked in full on a create and against the mask on an
-update, say — is the service's own policy, built on these impls; the plugin
-generates no request-level handling. See [Field
+update, say — is the service's own policy, built on these impls. aip-rs's
+`FieldBehaviorInterceptor` is one such policy, AIP's, which the `connect`
+output wires up: see [The interceptor's inputs](#the-interceptors-inputs-connecttrue).
+See also [Field
 behavior](#field-behavior-required-is-checked-here-value-rules-are-protovalidates).
 
 `order_by` and `page_token` are **not** generated: see [List
@@ -51,6 +54,7 @@ Only what a schema actually uses:
 | `buffa-types` | a resource is declared on a message (`implied_field_mask` returns its `FieldMask`) |
 | `uuid` | a resource ID is annotated `UUID4` |
 | [`cel`](https://crates.io/crates/cel) 0.15 | a List request carries a `filter` |
+| `aip-rs` with its default `connect` feature, and protovalidate-buffa's `Validate` on each unary request | a service is declared, with `connect=true` (the default) |
 
 
 ## What it generates
@@ -501,6 +505,58 @@ Two constraints come with it:
 - **The file keeps its `use super::*`.** Harmless where the types are already
   in scope; it is what makes the file work when the enclosing module brings
   them in with a `use` instead.
+
+### The interceptor's inputs: `connect=true`
+
+On by default. For every message a service takes — and the entries of a batch
+one — the plugin emits `aip::ResourceWrites`, reading the request's shape off
+its fields as aip-go does by reflection: a create (a singular field whose type
+is a resource), an update (that, and a `google.protobuf.FieldMask
+update_mask`), or a batch (a repeated `requests` of either). Its
+`for_each_write` hands each resource the request writes to the caller, as a
+`ResourceWrite` with its path (`item`, `requests[1].item`, each step with the
+field's number and type) and a `WriteMethod`: a create's `<resource>_id`, when
+the request has one, or an update's `update_mask`, made present. Every other
+request gets an empty impl. A resource needs nothing more: aip-rs makes every
+`aip::Resource` an `aip::DynResource`.
+
+```rust
+impl ::aip::ResourceWrites for CreateOrderRequest {
+    fn for_each_write(&mut self, f: &mut dyn ::core::ops::FnMut(::aip::ResourceWrite<'_>)) {
+        if let ::core::option::Option::Some(resource) = self.order.as_option_mut() {
+            f(::aip::ResourceWrite {
+                path: ::aip::FieldPath::field("order", 2, ::aip::FieldType::Message),
+                resource,
+                method: ::aip::WriteMethod::Create {
+                    id: ::core::option::Option::Some(&mut self.order_id),
+                },
+            });
+        }
+    }
+}
+```
+
+The interceptor fills in only an omitted id; the name is the handler's to
+build from the request's `parent` and id (AIP-133), with the generated
+`parse_parent` and `parse_<resource>_id`.
+
+Each package whose files declare a service gets a `PROCEDURES` table, one
+`aip::Procedure` per method in declaration order: `Procedure::unary` or
+`Procedure::streaming` by the method's streaming flags. A well-known type is
+named from buffa-types, which aip-rs gives an empty `FieldBehavior`; a unary
+method taking one is `Procedure::streaming`, which clears only, as there is
+nothing to fill in or validate. Any other message type this run does not
+generate fails generation, naming the method.
+
+```rust
+let service = ConnectRpcService::new(router)
+    .with_interceptor(aip::FieldBehaviorInterceptor::new(sdk::v1::PROCEDURES));
+```
+
+A unary method's request must implement protovalidate-buffa's `Validate`,
+which protoc-gen-protovalidate-buffa generates. Set `connect=false` to emit
+none of this, for a consumer that does not serve Connect or builds aip-rs
+without default features.
 
 ### Unresolved references: `allow_unresolved_refs=true`
 

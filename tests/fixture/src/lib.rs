@@ -21,3 +21,64 @@ pub mod proto {
 pub mod aip_gen {
     include!(concat!(env!("OUT_DIR"), "/aip/mod.rs"));
 }
+
+/// protovalidate-buffa's `Validate`, which the `PROCEDURES` table needs on
+/// every unary request and a consumer generates with
+/// protoc-gen-protovalidate-buffa. Written by hand here: every request passes,
+/// except a `CreateLineRequest` without a `parent`, so the tests can see
+/// protovalidate's violations merged with the `REQUIRED` ones the interceptor
+/// adds.
+mod validate {
+    use protovalidate_buffa::{FieldPath, FieldPathElement, Validate, ValidationError, Violation};
+
+    use crate::proto::example::v1::{
+        BatchCreateOrdersRequest, BatchUpdateOrdersRequest, BrowseRequest, CreateLineRequest,
+        CreateOrderRequest, DeleteOrderRequest, ListCoversRequest, ListGadgetsRequest,
+        ListVolumesRequest, UpdateOrderRequest,
+    };
+
+    macro_rules! valid {
+        ($($request:ty),* $(,)?) => {
+            $(impl Validate for $request {
+                fn validate(&self) -> Result<(), ValidationError> {
+                    Ok(())
+                }
+            })*
+        };
+    }
+
+    valid!(
+        BatchCreateOrdersRequest,
+        BatchUpdateOrdersRequest,
+        BrowseRequest,
+        CreateOrderRequest,
+        DeleteOrderRequest,
+        ListCoversRequest,
+        ListGadgetsRequest,
+        ListVolumesRequest,
+        UpdateOrderRequest,
+    );
+
+    impl Validate for CreateLineRequest {
+        fn validate(&self) -> Result<(), ValidationError> {
+            if !self.parent.is_empty() {
+                return Ok(());
+            }
+            Err(ValidationError {
+                violations: vec![Violation {
+                    field: FieldPath {
+                        elements: vec![FieldPathElement {
+                            field_name: Some("parent".into()),
+                            ..Default::default()
+                        }],
+                    },
+                    rule: FieldPath::default(),
+                    rule_id: "required".into(),
+                    message: "value is required".into(),
+                    for_key: false,
+                }],
+                ..Default::default()
+            })
+        }
+    }
+}

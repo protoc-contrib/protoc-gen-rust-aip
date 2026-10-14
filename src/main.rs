@@ -81,6 +81,11 @@ fn parse_options(parameter: &str) -> emit::Options {
                     options.allow_unresolved_refs = value;
                 }
             }
+            "connect" => {
+                if let Ok(value) = value.trim().parse() {
+                    options.connect = value;
+                }
+            }
             _ => {}
         }
     }
@@ -123,6 +128,13 @@ mod tests {
         assert!(!parse_options("").allow_unresolved_refs);
         assert!(parse_options("allow_unresolved_refs=true").allow_unresolved_refs);
         assert!(!parse_options("allow_unresolved_refs=false").allow_unresolved_refs);
+    }
+
+    #[test]
+    fn emits_the_interceptor_impls_unless_asked_not_to() {
+        assert!(parse_options("").connect);
+        assert!(parse_options("connect=true").connect);
+        assert!(!parse_options("connect=false").connect);
     }
 
     #[test]
