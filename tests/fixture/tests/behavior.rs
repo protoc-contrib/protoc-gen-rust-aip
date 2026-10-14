@@ -7,7 +7,7 @@
     reason = "asserting a field was reset to its default"
 )]
 
-use aip::FieldBehavior;
+use aip::{FieldBehavior, FieldBehaviorKind};
 use aip_fixture::proto::example::v1::{Address, Carrier, Event, Parcel, Shipment, event};
 use buffa::MessageField;
 
@@ -38,7 +38,7 @@ fn clears_output_only_fields_of_every_shape() {
         etag: "abc".to_owned(),
         ..Default::default()
     };
-    shipment.clear_output_only();
+    shipment.clear_fields(FieldBehaviorKind::OutputOnly);
 
     assert_eq!(shipment.reference, "keep me", "a client field must survive");
     assert_eq!(shipment.tracking_id, "");
@@ -57,7 +57,7 @@ fn clears_an_output_only_message_field_entirely() {
         }),
         ..Default::default()
     };
-    shipment.clear_output_only();
+    shipment.clear_fields(FieldBehaviorKind::OutputOnly);
     assert!(shipment.create_time.is_unset());
 }
 
@@ -67,7 +67,7 @@ fn descends_into_a_singular_message() {
         carrier: MessageField::some(carrier("DHL")),
         ..Default::default()
     };
-    shipment.clear_output_only();
+    shipment.clear_fields(FieldBehaviorKind::OutputOnly);
 
     let carrier = shipment.carrier.as_option().expect("still set");
     assert_eq!(carrier.name, "DHL", "the message itself is not output-only");
@@ -83,7 +83,7 @@ fn descends_into_repeated_and_map_messages() {
     shipment
         .parcels_by_code
         .insert("code".to_owned(), parcel("c"));
-    shipment.clear_output_only();
+    shipment.clear_fields(FieldBehaviorKind::OutputOnly);
 
     for parcel in &shipment.parcels {
         assert_eq!(parcel.billed_weight, 0.0);
@@ -99,7 +99,7 @@ fn the_walk_is_recursive_rather_than_one_deep() {
         parcels: vec![parcel("a")],
         ..Default::default()
     };
-    shipment.clear_output_only();
+    shipment.clear_fields(FieldBehaviorKind::OutputOnly);
 
     // Shipment -> Parcel -> Carrier.scac, two levels down.
     let inner = shipment.parcels[0].carrier.as_option().expect("still set");
@@ -121,7 +121,7 @@ fn a_clean_message_gets_no_walk_at_all() {
         origin: MessageField::some(address),
         ..Default::default()
     };
-    shipment.clear_output_only();
+    shipment.clear_fields(FieldBehaviorKind::OutputOnly);
     let origin = shipment.origin.as_option().expect("untouched");
     assert_eq!(origin.line1, "1 Main St");
     assert_eq!(origin.city, "Springfield");
@@ -134,7 +134,7 @@ fn clears_a_oneof_whose_active_member_is_output_only() {
         detail: Some(event::Detail::ServerTrace("internal".to_owned())),
         ..Default::default()
     };
-    event.clear_output_only();
+    event.clear_fields(FieldBehaviorKind::OutputOnly);
     assert!(event.detail.is_none());
     assert_eq!(event.id, "e1");
 }
@@ -145,7 +145,7 @@ fn leaves_a_oneof_whose_active_member_is_not_output_only() {
         detail: Some(event::Detail::Note("mine".to_owned())),
         ..Default::default()
     };
-    event.clear_output_only();
+    event.clear_fields(FieldBehaviorKind::OutputOnly);
     assert!(matches!(event.detail, Some(event::Detail::Note(ref n)) if n == "mine"));
 }
 
@@ -155,7 +155,7 @@ fn descends_into_a_oneof_member_that_carries_a_message() {
         detail: Some(event::Detail::Handoff(Box::new(carrier("UPS")))),
         ..Default::default()
     };
-    event.clear_output_only();
+    event.clear_fields(FieldBehaviorKind::OutputOnly);
 
     let Some(event::Detail::Handoff(handoff)) = &event.detail else {
         panic!("the member is not output-only, so it stays set");
@@ -164,7 +164,7 @@ fn descends_into_a_oneof_member_that_carries_a_message() {
     assert_eq!(handoff.scac, "");
 }
 
-// --- clear_input_only -------------------------------------------------------
+// --- clear_fields(InputOnly) ------------------------------------------------
 
 use aip_fixture::proto::example::v1::{Destination, Order};
 
@@ -184,7 +184,7 @@ fn clears_input_only_fields_at_any_depth() {
         billing: destination("Plovdiv"),
         ..Default::default()
     };
-    order.clear_input_only();
+    order.clear_fields(FieldBehaviorKind::InputOnly);
 
     assert_eq!(
         order.title, "keep me",

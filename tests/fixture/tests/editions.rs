@@ -2,7 +2,7 @@
 //! as an `Option<T>`. That this file compiles is most of the test: each
 //! accessor below reads an `Option<String>` a proto3 file has as a `String`.
 
-use aip::FieldBehavior;
+use aip::{FieldBehavior, FieldBehaviorKind, Resource};
 use aip_fixture::proto::example::v1::{CreateGadgetRequest, Gadget, ListGadgetsRequest};
 
 const ID: &str = "0190b8c6-6f6a-7d6e-9a3b-0c1d2e3f4a5b";
@@ -71,13 +71,13 @@ fn implies_by_explicit_and_implicit_presence() {
         serial: Some("s1".to_owned()),
         ..Default::default()
     };
-    assert_eq!(gadget.implied_update_mask(), ["label", "count"]);
+    assert_eq!(gadget.implied_field_mask().paths, ["label", "count"]);
 
     let gadget = Gadget {
         mode: "fast".to_owned(),
         ..Default::default()
     };
-    assert_eq!(gadget.implied_update_mask(), ["mode"]);
+    assert_eq!(gadget.implied_field_mask().paths, ["mode"]);
 }
 
 #[test]
@@ -86,34 +86,13 @@ fn clears_an_optional_output_only_field() {
         serial: Some("s1".to_owned()),
         ..Default::default()
     };
-    gadget.clear_output_only();
+    gadget.clear_fields(FieldBehaviorKind::OutputOnly);
     assert_eq!(gadget.serial, None);
 }
 
 // --- proto2 -----------------------------------------------------------------
 
 use aip_fixture::proto::example::v1::{Lamp, Shade};
-
-/// The paths a check reports, as strings: empty when it passes.
-trait Reported {
-    fn reported(self) -> Vec<String>;
-}
-
-impl Reported for Result<(), aip::RequiredError> {
-    fn reported(self) -> Vec<String> {
-        self.err().map_or_else(Vec::new, |error| {
-            error.paths.iter().map(ToString::to_string).collect()
-        })
-    }
-}
-
-impl Reported for Result<(), aip::ImmutableError> {
-    fn reported(self) -> Vec<String> {
-        self.err().map_or_else(Vec::new, |error| {
-            error.paths.iter().map(ToString::to_string).collect()
-        })
-    }
-}
 
 #[test]
 fn a_required_field_is_always_implied() {
@@ -124,25 +103,11 @@ fn a_required_field_is_always_implied() {
         shade: Shade::SHADE_LIGHT,
         ..Default::default()
     };
-    assert_eq!(lamp.implied_update_mask(), ["shade"]);
+    assert_eq!(lamp.implied_field_mask().paths, ["shade"]);
 
     let lamp = Lamp {
         label: Some(String::new()),
         ..Default::default()
     };
-    assert_eq!(lamp.implied_update_mask(), ["shade", "label"]);
-}
-
-#[test]
-fn a_changed_optional_immutable_field_is_reported() {
-    let stored = Lamp {
-        model: Some("m1".to_owned()),
-        ..Default::default()
-    };
-    let update = Lamp {
-        model: Some("m2".to_owned()),
-        ..Default::default()
-    };
-    assert_eq!(update.validate_immutable(&stored).reported(), ["model"]);
-    assert!(Lamp::default().validate_immutable(&stored).is_ok());
+    assert_eq!(lamp.implied_field_mask().paths, ["shade", "label"]);
 }

@@ -10,7 +10,6 @@
 pub mod behavior;
 pub mod field_mask;
 pub mod filter;
-pub mod request;
 pub mod resource;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -127,8 +126,8 @@ pub fn render(
         .collect();
 
     let generated: BTreeSet<String> = request.file_to_generate.iter().cloned().collect();
-    let outputs = behavior::plan(index, &generated, behavior::Clearing::OutputOnly)?;
-    let inputs = behavior::plan(index, &generated, behavior::Clearing::InputOnly)?;
+    let clear = behavior::plan(index, &generated, behavior::Operation::Clear)?;
+    let validate = behavior::plan(index, &generated, behavior::Operation::Validate)?;
     let lists = filter::plan(index);
 
     // Proto package to what each of its files emitted, concatenated in
@@ -143,28 +142,25 @@ pub fn render(
 
         let resources = resource::emit_file(name, &package, registry, options.views);
         let creates = resource::emit_create_ids(name, index, registry, options.views);
-        let mut items = field_mask::emit_file(name, index, registry)?;
-        for (fqn, request_items) in request::emit_file(name, index, registry, &generated)? {
-            items.entry(fqn).or_default().extend(request_items);
-        }
         let behaviors = field_behavior_impls(
             name,
             index,
-            &[
-                behavior::emit_file(name, index, &outputs, &generated),
-                behavior::emit_file(name, index, &inputs, &generated),
-            ],
-            items,
+            behavior::emit_file(name, index, &clear, &validate, &generated),
         );
+        let resource_impls = field_mask::emit_file(name, index, registry);
         let filters = filter::emit_file(name, index, &lists);
-        if resources.is_empty() && creates.is_empty() && behaviors.is_empty() && filters.is_empty()
+        if resources.is_empty()
+            && creates.is_empty()
+            && behaviors.is_empty()
+            && resource_impls.is_empty()
+            && filters.is_empty()
         {
             continue;
         }
         by_package
             .entry(package)
             .or_default()
-            .push(quote! { #resources #creates #behaviors #filters });
+            .push(quote! { #resources #creates #behaviors #resource_impls #filters });
     }
 
     let mut files = Vec::new();
@@ -197,29 +193,21 @@ pub fn render(
 }
 
 /// One `impl ::aip::FieldBehavior` per message declared in `file`, in
-/// declaration order: the clearing walks a message needs, on a resource the
-/// update-mask and check items, and on a create, update or batch request the
-/// request-level ones. A type implements a trait once, so the passes' items are
-/// gathered here rather than each emitting its own impl. Every item left out is
-/// the trait's "nothing to do" default.
+/// declaration order, holding the `clear_fields` and `validate_fields` the
+/// message needs. Every item left out is the trait's "nothing to do" default.
 ///
 /// Every message gets an impl — an empty one when nothing differs from the
 /// defaults — so a consumer's code generic over `T: aip::FieldBehavior`, such
 /// as a table naming every request a service takes, needs no impls of its own,
-/// and a request's items can call the impl of whatever they hold.
+/// and a message's operations can pass the call on to whatever it holds.
 fn field_behavior_impls(
     file: &str,
     index: &Index,
-    walks: &[BTreeMap<String, TokenStream>],
-    resources: BTreeMap<String, Vec<TokenStream>>,
+    items: BTreeMap<String, Vec<TokenStream>>,
 ) -> TokenStream {
-    let mut resources = resources;
+    let mut items = items;
     let impls = index.in_file(file).map(|message| {
-        let mut items: Vec<TokenStream> = walks
-            .iter()
-            .filter_map(|walk| walk.get(&message.fqn).cloned())
-            .collect();
-        items.extend(resources.remove(&message.fqn).unwrap_or_default());
+        let items = items.remove(&message.fqn).unwrap_or_default();
         let path: TokenStream = message
             .rust_path
             .parse()

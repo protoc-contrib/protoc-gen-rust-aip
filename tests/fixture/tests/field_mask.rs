@@ -1,63 +1,22 @@
-//! Exercises `MUTABLE_PATHS` — the AIP-134 expansion of an empty `update_mask`.
+//! Exercises the generated `aip::Resource::implied_field_mask` — the field mask
+//! AIP-134 implies when an update omits one — and `FieldBehavior::validate_fields`
+//! with `REQUIRED`.
 //!
-//! Checking that a mask names only these is *not* generated: that is
+//! Checking that a mask names only writable fields is *not* generated: that is
 //! `(buf.validate.field).field_mask.in`, which protovalidate runs. See the
 //! module docs on `emit::field_mask`.
 
-use aip::FieldBehavior;
-use aip_fixture::proto::example::v1::{Book, Shipment};
+use aip::{FieldBehavior, FieldBehaviorKind, FieldScope, Resource};
+use aip_fixture::proto::example::v1::Shipment;
 
-#[test]
-fn writable_is_every_field_no_behavior_takes_away() {
-    // `reference` is unannotated; the message fields are writable because the
-    // *message* is not output-only, whatever is inside it.
-    assert_eq!(
-        Shipment::MUTABLE_PATHS,
-        [
-            "reference",
-            "carrier",
-            "parcels",
-            "parcels_by_code",
-            "origin"
-        ]
-    );
-}
-
-#[test]
-fn output_only_identifier_and_immutable_are_all_unwritable() {
-    for path in [
-        "tracking_id", // OUTPUT_ONLY
-        "create_time", //
-        "audit_log",   //
-        "revision",    //
-        "etag",        // OUTPUT_ONLY *and* IMMUTABLE
-        "name",        // IDENTIFIER: selects the target, is not part of it
-    ] {
-        assert!(!Shipment::MUTABLE_PATHS.contains(&path), "{path}");
-    }
-}
-
-#[test]
-fn a_resource_annotating_nothing_gets_every_field() {
-    // Book declares a resource but no field_behavior at all, so nothing is
-    // taken away -- including `name`, which is only unwritable when the schema
-    // says IDENTIFIER. This constant reports what the schema states, not what
-    // AIP-122 implies about a field called `name`.
-    assert_eq!(Book::MUTABLE_PATHS, ["name"]);
-}
-
-// Carrier is deliberately absent: it declares no `google.api.resource`, so it
-// gets no list. A mask reaching `carrier.name` is checked by protovalidate
-// against the `field_mask.in` on the mask field, which needs nothing here.
-
-// --- implied_update_mask ----------------------------------------------------
+// --- implied_field_mask -----------------------------------------------------
 
 use aip_fixture::proto::example::v1::{Address, Carrier, Meter, Parcel, Unit, meter};
 
 #[test]
 fn an_empty_resource_implies_an_empty_mask() {
-    assert!(Shipment::default().implied_update_mask().is_empty());
-    assert!(Meter::default().implied_update_mask().is_empty());
+    assert!(Shipment::default().implied_field_mask().paths.is_empty());
+    assert!(Meter::default().implied_field_mask().paths.is_empty());
 }
 
 #[test]
@@ -71,7 +30,7 @@ fn implies_every_populated_writable_field_in_declaration_order() {
         ..Default::default()
     };
     assert_eq!(
-        shipment.implied_update_mask(),
+        shipment.implied_field_mask().paths,
         [
             "reference",
             "carrier",
@@ -94,13 +53,13 @@ fn never_implies_a_field_an_update_may_not_write() {
         etag: "e1".to_owned(),
         ..Default::default()
     };
-    assert!(shipment.implied_update_mask().is_empty());
+    assert!(shipment.implied_field_mask().paths.is_empty());
 
     let meter = Meter {
         serial: "s1".to_owned(),
         ..Default::default()
     };
-    assert!(meter.implied_update_mask().is_empty());
+    assert!(meter.implied_field_mask().paths.is_empty());
 }
 
 #[test]
@@ -112,7 +71,7 @@ fn reads_presence_as_protobuf_does() {
         reading: Some(meter::Reading::Count(0)),
         ..Default::default()
     };
-    assert_eq!(meter.implied_update_mask(), ["threshold", "count"]);
+    assert_eq!(meter.implied_field_mask().paths, ["threshold", "count"]);
 
     let meter = Meter {
         // Implicit presence: populated when not the zero value.
@@ -124,7 +83,7 @@ fn reads_presence_as_protobuf_does() {
         ..Default::default()
     };
     assert_eq!(
-        meter.implied_update_mask(),
+        meter.implied_field_mask().paths,
         ["level", "unit", "active", "calibration", "label"]
     );
 }
@@ -136,52 +95,10 @@ fn negative_zero_is_populated() {
         level: -0.0,
         ..Default::default()
     };
-    assert_eq!(meter.implied_update_mask(), ["level"]);
+    assert_eq!(meter.implied_field_mask().paths, ["level"]);
 }
 
-// --- validate_immutable ----------------------------------------------------
-
-#[test]
-fn a_changed_immutable_field_is_reported() {
-    let stored = Meter {
-        serial: "s1".to_owned(),
-        ..Default::default()
-    };
-    let update = Meter {
-        serial: "s2".to_owned(),
-        ..Default::default()
-    };
-    assert_eq!(update.validate_immutable(&stored).reported(), ["serial"]);
-}
-
-#[test]
-fn an_echoed_or_unset_immutable_field_is_not() {
-    let stored = Meter {
-        serial: "s1".to_owned(),
-        ..Default::default()
-    };
-    // Echoed back unchanged.
-    assert!(stored.clone().validate_immutable(&stored).is_ok());
-    // Left unset by the update.
-    assert!(Meter::default().validate_immutable(&stored).is_ok());
-}
-
-#[test]
-fn an_output_only_immutable_field_is_left_to_clearing() {
-    // Shipment.etag is OUTPUT_ONLY and IMMUTABLE: clear_output_only drops it,
-    // so a differing value is not a change the client made.
-    let update = Shipment {
-        etag: "e2".to_owned(),
-        ..Default::default()
-    };
-    let stored = Shipment {
-        etag: "e1".to_owned(),
-        ..Default::default()
-    };
-    assert!(update.validate_immutable(&stored).is_ok());
-}
-
-// --- validate_immutable: UNORDERED_LIST -------------------------------------
+// --- validate_fields: REQUIRED ---------------------------------------------
 
 use aip_fixture::proto::example::v1::{Destination, Geo, Node, Order, order};
 use buffa::MessageField;
@@ -191,17 +108,10 @@ trait Reported {
     fn reported(self) -> Vec<String>;
 }
 
-impl Reported for Result<(), aip::RequiredError> {
+impl Reported for Result<(), aip::FieldBehaviorError> {
     fn reported(self) -> Vec<String> {
         self.err().map_or_else(Vec::new, |error| {
-            error.paths.iter().map(ToString::to_string).collect()
-        })
-    }
-}
-
-impl Reported for Result<(), aip::ImmutableError> {
-    fn reported(self) -> Vec<String> {
-        self.err().map_or_else(Vec::new, |error| {
+            assert_eq!(error.kind, FieldBehaviorKind::Required);
             error.paths.iter().map(ToString::to_string).collect()
         })
     }
@@ -210,44 +120,6 @@ impl Reported for Result<(), aip::ImmutableError> {
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|&value| value.to_owned()).collect()
 }
-
-fn order_with_lists(legs: &[&str], tags: &[&str]) -> Order {
-    Order {
-        legs: strings(legs),
-        tags: strings(tags),
-        ..Default::default()
-    }
-}
-
-#[test]
-fn an_unordered_list_in_another_order_is_unchanged() {
-    let stored = order_with_lists(&[], &["a", "b", "c"]);
-    let update = order_with_lists(&[], &["c", "a", "b"]);
-    assert!(update.validate_immutable(&stored).is_ok());
-}
-
-#[test]
-fn an_unordered_list_compares_as_a_multiset() {
-    let stored = order_with_lists(&[], &["a", "a", "b"]);
-    // Same elements once each, different counts.
-    let update = order_with_lists(&[], &["a", "b", "b"]);
-    assert_eq!(update.validate_immutable(&stored).reported(), ["tags"]);
-    // A different length.
-    let update = order_with_lists(&[], &["a", "b"]);
-    assert_eq!(update.validate_immutable(&stored).reported(), ["tags"]);
-    // A different element.
-    let update = order_with_lists(&[], &["a", "a", "c"]);
-    assert_eq!(update.validate_immutable(&stored).reported(), ["tags"]);
-}
-
-#[test]
-fn an_ordered_list_in_another_order_is_changed() {
-    let stored = order_with_lists(&["x", "y"], &[]);
-    let update = order_with_lists(&["y", "x"], &[]);
-    assert_eq!(update.validate_immutable(&stored).reported(), ["legs"]);
-}
-
-// --- validate_required_fields ----------------------------------------------
 
 fn destination(city: &str, latitude: Option<f64>) -> Destination {
     Destination {
@@ -283,10 +155,34 @@ fn mask(paths: &[&str]) -> Vec<String> {
 #[test]
 fn a_create_must_set_every_required_field() {
     assert_eq!(
-        Order::default().validate_required_fields(None).reported(),
+        Order::default()
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
         ["title", "confirmed", "quantity", "destination", "stops"]
     );
-    assert!(complete().validate_required_fields(None).is_ok());
+    assert!(
+        complete()
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_reported_path_carries_each_field_number_and_type() {
+    use aip::{FieldPath, FieldType};
+    let order = Order {
+        destination: destination("Sofia", Some(0.0)).into(),
+        ..complete()
+    };
+    let error = order
+        .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+        .unwrap_err();
+    assert_eq!(
+        error.paths,
+        [FieldPath::field("destination", 5, FieldType::Message)
+            .join(FieldPath::field("geo", 3, FieldType::Message))
+            .join(FieldPath::field("latitude", 1, FieldType::Double))]
+    );
 }
 
 #[test]
@@ -299,7 +195,9 @@ fn reads_presence_as_protobuf_does_for_required() {
         ..complete()
     };
     assert_eq!(
-        order.validate_required_fields(None).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
         ["confirmed"]
     );
 }
@@ -311,7 +209,9 @@ fn descends_into_a_set_message_at_any_depth() {
         ..complete()
     };
     assert_eq!(
-        order.validate_required_fields(None).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
         ["destination.city", "destination.geo.latitude"]
     );
 }
@@ -320,13 +220,19 @@ fn descends_into_a_set_message_at_any_depth() {
 fn a_nested_message_is_checked_only_when_set() {
     // `billing` is not REQUIRED: unset, nothing beneath it is checked; set, its
     // own REQUIRED fields apply. Its `geo` is unset, so it is not entered.
-    assert!(complete().validate_required_fields(None).is_ok());
+    assert!(
+        complete()
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .is_ok()
+    );
     let order = Order {
         billing: destination("", None).into(),
         ..complete()
     };
     assert_eq!(
-        order.validate_required_fields(None).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
         ["billing.city"]
     );
 }
@@ -335,7 +241,11 @@ fn a_nested_message_is_checked_only_when_set() {
 fn a_repeated_field_is_present_when_not_empty_and_never_entered() {
     // `complete` holds one empty Destination in `stops`: its missing city is
     // not reported.
-    assert!(complete().validate_required_fields(None).is_ok());
+    assert!(
+        complete()
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -345,7 +255,9 @@ fn enters_the_oneof_member_that_is_set() {
         ..complete()
     };
     assert_eq!(
-        order.validate_required_fields(None).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
         ["voucher.code"]
     );
 
@@ -353,11 +265,15 @@ fn enters_the_oneof_member_that_is_set() {
         payment: Some(order::Payment::Card(String::new())),
         ..complete()
     };
-    assert!(order.validate_required_fields(None).is_ok());
+    assert!(
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .is_ok()
+    );
 }
 
 #[test]
-fn enters_a_recursive_message_once_per_path() {
+fn follows_a_recursive_message_as_deep_as_it_is_set() {
     let order = Order {
         root: MessageField::some(Node {
             child: MessageField::some(Node::default()),
@@ -365,9 +281,13 @@ fn enters_a_recursive_message_once_per_path() {
         }),
         ..complete()
     };
+    // Each message checks its own fields and passes the check on to what it
+    // holds, so a set `child` is checked like `root`.
     assert_eq!(
-        order.validate_required_fields(None).reported(),
-        ["root.label"]
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
+        ["root.label", "root.child.label"]
     );
 }
 
@@ -377,7 +297,7 @@ fn an_update_checks_only_the_fields_its_mask_names() {
     let paths = mask(&["title"]);
     assert_eq!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .reported(),
         ["title"]
     );
@@ -385,7 +305,7 @@ fn an_update_checks_only_the_fields_its_mask_names() {
     let paths = mask(&["billing", "legs"]);
     assert!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .is_ok()
     );
 }
@@ -398,7 +318,9 @@ fn a_mask_naming_a_message_checks_everything_beneath_it() {
     };
     let paths = mask(&["destination"]);
     assert_eq!(
-        order.validate_required_fields(Some(&paths)).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
+            .reported(),
         ["destination.city", "destination.geo.latitude"]
     );
 }
@@ -411,12 +333,16 @@ fn a_nested_path_checks_just_that_field() {
     };
     let paths = mask(&["destination.city"]);
     assert_eq!(
-        order.validate_required_fields(Some(&paths)).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
+            .reported(),
         ["destination.city"]
     );
     let paths = mask(&["destination.geo"]);
     assert_eq!(
-        order.validate_required_fields(Some(&paths)).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
+            .reported(),
         ["destination.geo.latitude"]
     );
 }
@@ -435,7 +361,10 @@ fn takes_a_field_mask_paths_as_they_are() {
     };
     assert_eq!(
         order
-            .validate_required_fields(Some(&update_mask.paths))
+            .validate_fields(
+                FieldBehaviorKind::Required,
+                FieldScope::Mask(&update_mask.paths)
+            )
             .reported(),
         ["confirmed"]
     );
@@ -447,7 +376,7 @@ fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
     let paths = mask(&["destination.city"]);
     assert_eq!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .reported(),
         ["destination.city"]
     );
@@ -455,7 +384,7 @@ fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
     let paths = mask(&["destination.geo.latitude"]);
     assert_eq!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .reported(),
         ["destination.geo.latitude"]
     );
@@ -463,7 +392,7 @@ fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
     let paths = mask(&["billing.city"]);
     assert_eq!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .reported(),
         ["billing.city"]
     );
@@ -471,7 +400,7 @@ fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
     let paths = mask(&["voucher.code"]);
     assert_eq!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .reported(),
         ["voucher.code"]
     );
@@ -480,7 +409,9 @@ fn a_nested_path_is_checked_even_when_its_parent_is_unset() {
         ..Default::default()
     };
     assert_eq!(
-        order.validate_required_fields(Some(&paths)).reported(),
+        order
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
+            .reported(),
         ["voucher.code"]
     );
 }
@@ -490,7 +421,7 @@ fn a_nested_path_to_a_field_that_is_not_required_reports_nothing() {
     let paths = mask(&["billing.line2", "destination.line2"]);
     assert!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .is_ok()
     );
 }
@@ -500,7 +431,9 @@ fn a_create_does_not_enter_an_unset_message() {
     // Only the REQUIRED fields of the order itself; nothing beneath the unset
     // `destination`, `billing`, `voucher` or `root`.
     assert_eq!(
-        Order::default().validate_required_fields(None).reported(),
+        Order::default()
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
         ["title", "confirmed", "quantity", "destination", "stops"]
     );
 }
@@ -511,7 +444,7 @@ fn an_unset_message_named_whole_reports_only_itself() {
     let paths = mask(&["destination"]);
     assert_eq!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .reported(),
         ["destination"]
     );
@@ -519,7 +452,7 @@ fn an_unset_message_named_whole_reports_only_itself() {
     let paths = mask(&["billing"]);
     assert!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .is_ok()
     );
     // The same one level down: `destination.geo` is named whole and is not
@@ -527,7 +460,7 @@ fn an_unset_message_named_whole_reports_only_itself() {
     let paths = mask(&["destination.geo"]);
     assert!(
         Order::default()
-            .validate_required_fields(Some(&paths))
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&paths))
             .is_ok()
     );
 }
@@ -536,14 +469,15 @@ fn an_unset_message_named_whole_reports_only_itself() {
 
 /// What a server layer over every request does, without knowing the type.
 fn admit<T: FieldBehavior>(message: &mut T) -> Vec<String> {
-    message.clear_output_only();
-    message.validate_required_fields(None).reported()
+    message.clear_fields(FieldBehaviorKind::OutputOnly);
+    message
+        .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+        .reported()
 }
 
 #[test]
 fn one_generic_layer_handles_every_generated_message() {
-    // Carrier only has a field to clear: every other item is the trait's
-    // "nothing to do" default.
+    // Carrier only has a field to clear: its check is the trait's default.
     let mut carrier = Carrier {
         name: "DHL".to_owned(),
         scac: "SERVER".to_owned(),
@@ -551,13 +485,75 @@ fn one_generic_layer_handles_every_generated_message() {
     };
     assert!(admit(&mut carrier).is_empty());
     assert_eq!(carrier.scac, "");
-    assert!(Carrier::MUTABLE_PATHS.is_empty());
-    assert!(carrier.implied_update_mask().is_empty());
-    assert!(carrier.validate_immutable(&Carrier::default()).is_ok());
 
     // A resource gets its own checks through the same layer.
     assert_eq!(
         admit(&mut Order::default()),
         ["title", "confirmed", "quantity", "destination", "stops"]
     );
+}
+
+#[test]
+fn the_trait_is_dyn_compatible() {
+    let mut order = Order::default();
+    let behavior: &mut dyn FieldBehavior = &mut order;
+    behavior.clear_fields(FieldBehaviorKind::OutputOnly);
+    assert_eq!(
+        behavior
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .reported(),
+        ["title", "confirmed", "quantity", "destination", "stops"]
+    );
+}
+
+// --- every message, and Resource --------------------------------------------
+
+#[test]
+fn a_message_with_no_behavior_still_implements_field_behavior() {
+    // `Address` annotates nothing: its impl is empty, the trait's defaults.
+    fn behaves<T: FieldBehavior>(message: &mut T) -> bool {
+        message.clear_fields(FieldBehaviorKind::OutputOnly);
+        message
+            .validate_fields(FieldBehaviorKind::Required, FieldScope::All)
+            .is_ok()
+    }
+    let mut address = Address {
+        line1: "1 Main St".to_owned(),
+        ..Default::default()
+    };
+    assert!(behaves(&mut address));
+    assert_eq!(address.line1, "1 Main St");
+}
+
+#[test]
+fn parse_name_reads_the_identifier_into_the_typed_name() {
+    use aip::ResourceName;
+
+    let shipment = Shipment {
+        name: "shipments/s1".to_owned(),
+        ..Default::default()
+    };
+    let name = Resource::parse_name(&shipment).expect("a shipment name");
+    assert_eq!(name.to_string(), "shipments/s1");
+    assert_eq!(name.pattern(), "shipments/{shipment}");
+
+    let shipment = Shipment {
+        name: "parcels/p1".to_owned(),
+        ..Default::default()
+    };
+    assert!(Resource::parse_name(&shipment).is_err());
+}
+
+#[test]
+fn a_resource_names_its_typed_name() {
+    fn name_of<R: Resource>(resource: &R) -> String {
+        resource
+            .parse_name()
+            .map_or_else(|error| error.to_string(), |name| name.to_string())
+    }
+    let shipment = Shipment {
+        name: "shipments/s2".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(name_of(&shipment), "shipments/s2");
 }

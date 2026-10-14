@@ -57,6 +57,10 @@ pub struct Field {
     /// The field number, which a protovalidate `FieldPathElement` carries
     /// alongside the name.
     pub number: i32,
+    /// The `aip::FieldType` variant naming the field's protobuf type, e.g.
+    /// `Int32`, which a violation path carries alongside the number: the
+    /// element type of a repeated field, `Message` for a map.
+    pub field_type: &'static str,
     pub kind: Kind,
     /// The fully-qualified type name for a message or enum field, else empty.
     pub type_name: String,
@@ -96,6 +100,13 @@ pub struct Field {
     /// Settable on create and never afterwards, which for the purposes of an
     /// `update_mask` is the same as not writable.
     pub immutable: bool,
+    /// Annotated `google.api.field_behavior = OPTIONAL`.
+    ///
+    /// Not [`Field::optional`], which is protobuf presence: this is the AIP-203
+    /// annotation, which only documents that the field may be omitted.
+    pub optional_behavior: bool,
+    /// Annotated `google.api.field_behavior = NON_EMPTY_DEFAULT`.
+    pub non_empty_default: bool,
     /// Annotated `google.api.field_behavior = UNORDERED_LIST`.
     ///
     /// The service does not keep the order of a repeated field, so two lists
@@ -285,6 +296,27 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str], scope: Scope) -> F
         _ => Kind::Integer,
     };
 
+    let field_type = match field.r#type {
+        Some(Type::TYPE_DOUBLE) => "Double",
+        Some(Type::TYPE_FLOAT) => "Float",
+        Some(Type::TYPE_INT64) => "Int64",
+        Some(Type::TYPE_UINT64) => "Uint64",
+        Some(Type::TYPE_INT32) => "Int32",
+        Some(Type::TYPE_FIXED64) => "Fixed64",
+        Some(Type::TYPE_FIXED32) => "Fixed32",
+        Some(Type::TYPE_BOOL) => "Bool",
+        Some(Type::TYPE_STRING) => "String",
+        Some(Type::TYPE_GROUP) => "Group",
+        Some(Type::TYPE_BYTES) => "Bytes",
+        Some(Type::TYPE_UINT32) => "Uint32",
+        Some(Type::TYPE_ENUM) => "Enum",
+        Some(Type::TYPE_SFIXED32) => "Sfixed32",
+        Some(Type::TYPE_SFIXED64) => "Sfixed64",
+        Some(Type::TYPE_SINT32) => "Sint32",
+        Some(Type::TYPE_SINT64) => "Sint64",
+        Some(Type::TYPE_MESSAGE) | None => "Message",
+    };
+
     // A proto3 `optional` field is placed in a synthetic one-member oneof.
     // Reporting it as a oneof would make generated code match on an enum buffa
     // does not emit for it.
@@ -301,6 +333,7 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str], scope: Scope) -> F
     Field {
         name: field.name.clone().unwrap_or_default(),
         number: field.number.unwrap_or_default(),
+        field_type,
         kind,
         type_name: field.type_name.clone().unwrap_or_default(),
         repeated: field.label == Some(Label::LABEL_REPEATED),
@@ -313,6 +346,8 @@ fn build_field(field: &FieldDescriptorProto, oneofs: &[&str], scope: Scope) -> F
         identifier: has_behavior(field, FieldBehavior::IDENTIFIER),
         immutable: has_behavior(field, FieldBehavior::IMMUTABLE),
         unordered_list: has_behavior(field, FieldBehavior::UNORDERED_LIST),
+        optional_behavior: has_behavior(field, FieldBehavior::OPTIONAL),
+        non_empty_default: has_behavior(field, FieldBehavior::NON_EMPTY_DEFAULT),
         map_value: None,
         is_map: false,
     }

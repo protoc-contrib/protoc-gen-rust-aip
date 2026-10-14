@@ -24,15 +24,14 @@ Every pass is implemented.
 | --- | --- |
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or `None` for the server to mint one |
-| `impl aip::FieldBehavior`: `MUTABLE_PATHS`, `implied_update_mask`, `validate_immutable`, `validate_required_fields` | AIP-134/203: which fields an update may write, the mask a client implies by omitting one, and the checks that an update changes no `IMMUTABLE` field and a create or update leaves no `REQUIRED` one unset |
-| `impl aip::FieldBehavior`: `clear_output_only`, `clear_input_only` | AIP-203 clearing walks, recursive through singular, repeated, map and oneof fields |
-| `impl aip::FieldBehavior`: `validate_required`, `imply_resource_name`, `imply_update_mask` | AIP-133/134/233/235: the resource's check, its name and its implied mask applied the way a create, update or batch request asks, failures reported as `aip::FieldPath`s from the request |
-| `impl aip::FieldBehavior` on every other message | empty: the trait's "nothing to do" defaults, so code generic over the trait needs no impls of its own |
+| `impl aip::FieldBehavior` on every message: `clear_fields(kind)`, `validate_fields(kind, scope)` | AIP-203: unset the fields of a behavior, recursive through singular, repeated, map and oneof fields; report those of them a `FieldScope` contains that are unset, recursive through singular and oneof fields. One arm per kind a message carries; an empty impl, the trait's "nothing to do" defaults, when it carries none |
+| `impl aip::Resource` on every resource: `type Name`, `parse_name`, `implied_field_mask` | AIP-122/134: the typed name, and the field mask an update of the resource implies when it omits one |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 
-`REQUIRED` on a resource's fields is checked by `validate_required_fields`, not
-protovalidate, because the resource is shared by its create and update requests
-and protovalidate cannot tell which one it is in — see [Field
+Which operation a service applies, with which kind, to which message of a
+request — `REQUIRED` checked in full on a create and against the mask on an
+update, say — is the service's own policy, built on these impls; the plugin
+generates no request-level handling. See [Field
 behavior](#field-behavior-required-is-checked-here-value-rules-are-protovalidates).
 
 `order_by` and `page_token` are **not** generated: see [List
@@ -49,6 +48,7 @@ Only what a schema actually uses:
 | Crate | Needed when |
 | --- | --- |
 | [`aip-rs`](https://crates.io/crates/aip-rs) (as `aip`) | always |
+| `buffa-types` | a resource is declared on a message (`implied_field_mask` returns its `FieldMask`) |
 | `uuid` | a resource ID is annotated `UUID4` |
 | [`cel`](https://crates.io/crates/cel) 0.15 | a List request carries a `filter` |
 
@@ -112,70 +112,56 @@ disagree with the one that runs — decode a token the server never issued. Pars
 them in the query layer — [sqlx-query](https://github.com/sqlx-contrib/sqlx-query)
 does, for SQL.
 
-### `MUTABLE_PATHS`, `implied_update_mask`, and what is *not* generated for AIP-134
+### `aip::FieldBehavior` and `aip::Resource`, and what is *not* generated for AIP-134
 
-On each resource, which of its fields an update may write — everything not
-`OUTPUT_ONLY`, `IDENTIFIER` or `IMMUTABLE`. The three are one question, not
-three: the server owns it, it selects the target rather than being part of it,
-or it was settable once, on create.
-
-These, and the clearing walks below, are one trait,
-[`aip::FieldBehavior`](https://github.com/protoc-contrib/aip-rs), which the
-plugin implements for every message it generates:
+Two traits from [aip-rs](https://github.com/protoc-contrib/aip-rs), whose docs
+hold the semantics of each item. `aip::FieldBehavior` is implemented for every
+message the plugin generates, `aip::Resource` for every resource:
 
 ```rust
 impl aip::FieldBehavior for Shipment {
-    const MUTABLE_PATHS: &'static [&'static str] = &["reference", /* ... */];
-    fn implied_update_mask(&self) -> Vec<&'static str> { /* ... */ }
-    fn validate_immutable(&self, existing: &Self) -> Result<(), aip::ImmutableError> { /* ... */ }
-    fn validate_required_fields(&self, mask: Option<&[String]>) -> Result<(), aip::RequiredError> { /* ... */ }
-    fn clear_output_only(&mut self) { /* ... */ }
-    fn clear_input_only(&mut self) { /* ... */ }
+    fn clear_fields(&mut self, kind: aip::FieldBehaviorKind) { /* one arm per kind it carries */ }
+    fn validate_fields(&self, kind: aip::FieldBehaviorKind, scope: aip::FieldScope<'_>)
+        -> Result<(), aip::FieldBehaviorError> { /* likewise */ }
 }
 
-impl aip::FieldBehavior for Voucher {} // nothing to do: every item is the default
+impl aip::Resource for Shipment {
+    type Name = ShipmentName;
+    fn parse_name(&self) -> Result<ShipmentName, <ShipmentName as FromStr>::Err> { self.name.parse() }
+    fn implied_field_mask(&self) -> buffa_types::FieldMask { /* the writable fields set */ }
+}
+
+impl aip::FieldBehavior for Voucher {} // nothing annotated: the defaults
 ```
 
-An impl holds only the items its message needs; every other item is the
-trait's default, the "nothing to do" answer — no writable paths, nothing to
-imply, `Ok(())` from every check, nothing to clear. Every message gets an impl,
-an empty one when it needs nothing, so one server layer over
-`T: aip::FieldBehavior` handles every request a service takes — a table naming
-each of them type-checks without impls of the consumer's own. The items are
-named after what they do: `validate_*` returns `Ok(())` or the fields that fail,
-`imply_*` fills in what a client may leave to the server, `clear_*` drops what
-one side of the wire may not see. The semantics of each item are documented on the
-trait, in aip-rs.
+Every message gets a `FieldBehavior` impl, an empty one when it carries no
+behavior, so one server layer over `T: aip::FieldBehavior` handles every request
+a service takes — a table naming each of them type-checks without impls of the
+consumer's own. The trait is dyn-compatible. Bring a trait into scope where its
+items are called, as for any trait.
 
-Bring the trait into scope where its items are called, as for any trait;
-`Shipment::MUTABLE_PATHS` and `Shipment::implied_update_mask` still work as
-paths once it is:
+`implied_field_mask` is the one AIP-134 shorthand protovalidate cannot handle:
+**an omitted mask** is every field an update may write — not `OUTPUT_ONLY`,
+`IDENTIFIER` or `IMMUTABLE` — that the client *populated*:
 
 ```rust
-use aip::FieldBehavior;
+use aip::{FieldBehavior, FieldBehaviorKind, Resource};
 
-let paths = Shipment::MUTABLE_PATHS;
-let implied = shipment.implied_update_mask();
+// The client sent no update_mask: write what it populated.
+shipment.clear_fields(FieldBehaviorKind::OutputOnly);
+let update_mask = shipment.implied_field_mask();
 ```
 
-The trait is not dyn-compatible — an associated constant, a method taking
-`&Self` — so generic code takes `T: FieldBehavior`, not `dyn FieldBehavior`.
-
-`validate_immutable` is AIP-203's `IMMUTABLE` half: it fails with the fields an
-update sets to something other than the stored value. Neither expansion ever
-writes one, so without it a changed value would be dropped silently rather
-than refused; an echoed-back value, or an unset one, passes. A repeated field
-that is also `UNORDERED_LIST` is compared ignoring order, as a multiset, since
-the service does not promise to keep it. aip-go's `ValidateImmutable` answers
-the same.
-
-`validate_required_fields` is the `REQUIRED` half; see [Field
-behavior](#field-behavior-required-is-checked-here-value-rules-are-protovalidates).
-
-**Stricter than AIP-161, on purpose.** AIP-161 has a mask naming an
-`OUTPUT_ONLY` field ignored; here `field_mask.in` rejects it, which is the
-clearer error, and protoc-gen-aip-lint's `update-mask-writable-fields` rule
-keeps that list equal to the writable fields.
+Populated is read as protobuf reads presence — protobuf-go's `Has`, which is
+what aip-go's `ImpliedFieldMask` uses: an `optional` field, a message or a
+oneof member when set, even to its zero value; any other scalar when not its
+zero value; a repeated field or map when not empty. So **clear, then imply**:
+a populated message field is implied as one path — `carrier`, not
+`carrier.name` — so the update writes everything beneath it, nested
+`OUTPUT_ONLY` values included. And **a zero value is never implied**: `false`,
+`0` and `""` on a field without explicit presence are indistinguishable from
+unset, so a client clears one with an explicit mask, or the schema makes the
+field `optional`.
 
 **Validating a mask is not generated, and should not be.** That is
 `(buf.validate.field).field_mask.in`, which protovalidate-buffa implements as a
@@ -187,47 +173,15 @@ google.protobuf.FieldMask update_mask = 2 [
 ];
 ```
 
-It already matches subpaths, already reports as an ordinary violation under rule
-id `field_mask.in`, and is already run by `#[protovalidate_buffa::connect_impl]`
-along with every other rule on the request. Anything emitted here would be a
-second implementation of the same rule, reported differently, that a handler had
-to remember to call. An earlier cut of this PR generated exactly that; it was
-removed.
+It already matches subpaths and reports as an ordinary violation under rule id
+`field_mask.in`. protoc-gen-aip-lint's `update-mask-writable-fields` rule keeps
+that list equal to the writable fields. **Stricter than AIP-161, on purpose**:
+AIP-161 has a mask naming an `OUTPUT_ONLY` field ignored; `field_mask.in`
+rejects it, which is the clearer error.
 
-What protovalidate cannot do is **expand**. AIP-134 gives a mask two
-shorthands, and a server has to turn each into a list of paths to write:
-
-- **`*`**, full replacement, is every writable field: `MUTABLE_PATHS`.
-- **An omitted mask** is every writable field the client *populated*:
-  `implied_update_mask()`, read off the resource in the request.
-
-```rust
-// The client sent no update_mask: write what it populated.
-let paths: Vec<&str> = shipment.implied_update_mask();
-```
-
-Populated is read as protobuf reads presence — protobuf-go's `Has`, which is
-what aip-go's `ImpliedUpdateMask` uses: an `optional` field, a message or a
-oneof member when set, even to its zero value; any other scalar when not its
-zero value; a repeated field or map when not empty. It is emitted on the owned
-message only, not on views: implying a mask means writing it, and a view is
-read-only.
-
-Two things follow from presence, and both are worth knowing at the call site:
-
-- **Clear, then imply.** A populated message field is implied as one path —
-  `carrier`, not `carrier.name` — so the update writes everything beneath it,
-  nested `OUTPUT_ONLY` values included. Call `clear_output_only()` on the
-  inbound resource first.
-- **A zero value is never implied.** `false`, `0` and `""` on a field without
-  explicit presence are indistinguishable from unset, so a client clears one
-  with an explicit mask — or the schema makes the field `optional`.
-
-Deriving both from the schema is the point — a new writable field joins them
-without anyone remembering to.
-
-Which leaves the `field_mask.in` annotation restating what `field_behavior`
-already says. Keeping the two in step is a **lint's** job.
+`*`, full replacement, is not expanded here either: a service that accepts it
+expands it to the writable fields itself, e.g. from the schema's descriptors
+with aip-rs's `descriptor` feature.
 
 ### Create IDs, per AIP-133
 
@@ -262,87 +216,82 @@ A server needs whichever minting feature it calls — `v7` for `now_v7`.
 
 ### Field behavior: `REQUIRED` is checked here, value rules are protovalidate's
 
-Two walks clear what one side may not see: `clear_output_only` drops
-server-owned values from an inbound request, and `clear_input_only` drops
-values a client may send but must never get back from an outbound response.
-Each is emitted only for messages with such a field at some depth.
-
-A walk reaches only messages this run generates. A generated message holding
-one from a file that is *not* generated, with `OUTPUT_ONLY` (or `INPUT_ONLY`)
-fields beneath it, fails generation, naming both — those fields could not be
-cleared, and for `OUTPUT_ONLY` an implied mask naming the holding field would
-store them. Generate that file too.
-
-The walks are generated, not reflective — and not as an
-optimisation. buffa 0.9 has **no reflective path to mutation in any mode**:
-`Reflectable` exposes only `reflect(&self)`, and the source marks
-`reflect_mut` as designed but deferred to the MergeSink work.
-`ReflectMessage::clear()` exists, but reaching it needs a
-`&mut dyn ReflectMessage` that nothing produces.
+`clear_fields(kind)` unsets the fields annotated `kind`: `OutputOnly` drops
+server-owned values from an inbound request, `InputOnly` values a client may
+send but must never get back from an outbound response. It is generated, not
+reflective — and not as an optimisation. buffa 0.9 has **no reflective path to
+mutation in any mode**: `Reflectable` exposes only `reflect(&self)`, and the
+source marks `reflect_mut` as designed but deferred to the MergeSink work. The
+read-only check is generated alongside, so field behavior has one mechanism.
 
 ```rust
 impl aip::FieldBehavior for Shipment {
-    fn clear_output_only(&mut self) {
-        self.tracking_id = Default::default();
-        for item in &mut self.parcels { item.clear_output_only(); }
-        // ...
+    fn clear_fields(&mut self, kind: aip::FieldBehaviorKind) {
+        match kind {
+            aip::FieldBehaviorKind::OutputOnly => {
+                self.tracking_id = Default::default();
+                for item in &mut self.parcels { item.clear_fields(kind); }
+                // ...
+            }
+            aip::FieldBehaviorKind::Identifier => self.name = Default::default(),
+            _ => {}
+        }
     }
 }
 ```
 
-The walk is recursive, through singular, repeated and map-valued messages. A
-message with nothing output-only beneath it gets no walk at all and is never
-descended into. A `oneof` is cleared entirely when the member that is set is
-the output-only one, since there is no individual field to assign to.
-`clear_input_only` is the same walk for `INPUT_ONLY`.
+Each message has one arm per kind it carries at some depth, and passes the call
+on to the messages it holds — singular, repeated, map-valued and oneof — through
+their own impl; arms with the same body are shared (`A | B`). A field that is
+cleared is not descended into. A `oneof` is cleared entirely when the member
+that is set carries the kind, since there is no individual field to assign to.
 
-Revisit the split if a buffa release lands `reflect_mut`.
+Every operation and kind is generated; which a service applies, and where, is
+its own policy. AIP-203 defines clearing `OUTPUT_ONLY` on input and
+`INPUT_ONLY` on output, and checking `REQUIRED`.
 
 **`REQUIRED` on a resource is checked here, not by protovalidate.** AIP-203
 gives a `REQUIRED` resource field two meanings: a create must set it, and a
 partial update may omit it unless its mask names it — then it must be set, or
 the update would clear it. A resource message is shared by both requests, and a
-`buf.validate` rule on it cannot tell which one it is in. Marking the field
-`(buf.validate.field).required` breaks every partial update that leaves it out;
-the workaround is a CEL rule restated on each create and update request, which
-is a second, hand-written copy of what `field_behavior` already says and which
-no lint can practically keep in step.
-
-So the split is by what protovalidate can see:
+`buf.validate` rule on it cannot tell which one it is in. So the split is by
+what protovalidate can see:
 
 - **protovalidate** keeps a request's own fields — `parent`, the resource
   field itself, `update_mask` — and value rules on the resource's fields:
   lengths, patterns, ranges. A value rule on a `REQUIRED` field needs
   `ignore = IGNORE_IF_ZERO_VALUE`, so an update that leaves it out passes.
-- **`validate_required_fields`** reads `REQUIRED` off the resource, with the
-  mask the request carries:
+- **`validate_fields(Required, scope)`** reads `REQUIRED` off the resource,
+  within the scope the method asks for:
 
 ```rust
-use aip::FieldBehavior;
+use aip::{FieldBehavior, FieldBehaviorKind, FieldScope};
 
 // create: every REQUIRED field
-item.validate_required_fields(None)?;
+item.validate_fields(FieldBehaviorKind::Required, FieldScope::All)?;
 // update, after the implied mask is filled in
-item.validate_required_fields(Some(&update_mask.paths))?;
-// Err(aip::RequiredError { paths }): InvalidArgument, naming each path
+item.validate_fields(FieldBehaviorKind::Required, FieldScope::Mask(&update_mask.paths))?;
+// Err(aip::FieldBehaviorError { kind, paths }): InvalidArgument, naming each path
 ```
 
-`Some(paths)` checks only the fields the mask names. A path naming a message
-checks everything beneath it; a nested path, just that field. Expand `*` with
-`MUTABLE_PATHS` first. The parameter is the owned `FieldMask`'s `paths` as it
-is, so a request's mask is passed without conversion, and `None` needs no type
-annotation.
+`FieldScope::Mask` checks only the fields the mask names. A path naming a
+message checks everything beneath it; a nested path, just that field. `*` is
+matched as written, not expanded. The mask is the owned `FieldMask`'s `paths` as
+it is, so a request's mask is passed without conversion.
 
 Nested messages follow AIP-203's rule that a nested message's annotations are
-independent of its parent's: a set singular message is descended into, and its
-own `REQUIRED` fields are reported as dotted paths (`destination.city`). An
-unset one is not entered on a create, or when the mask names it whole — its own
-`REQUIRED` is reported at its level. A nested path is checked even when its
-parent is unset, reading the parent as empty: `update_mask: destination.city`
-with no `destination` writes `destination.city` as empty, so it would clear a
-`REQUIRED` field and is reported. Repeated and map fields are present when not
-empty and are not descended into. A message type that contains itself is entered once per
-path, since every path is a `&'static str` spelled out at generation time.
+independent of its parent's: a set singular message or oneof member is checked
+through its own impl, and its failing fields are reported as dotted paths
+(`destination.city`) from the message checked. An unset one is not entered with
+`FieldScope::All`, or when the mask names it whole — its own `REQUIRED` is
+reported at its level. A nested path is checked even when its parent is unset,
+against the parent's default: `update_mask: destination.city` with no
+`destination` writes `destination.city` as empty, so it would clear a
+`REQUIRED` field and is reported. (For an unset oneof member whose type is in
+another package, that last case is not checked: the generated code cannot name
+the type to take its default.) Repeated and map fields are present when not
+empty and are not entered, as a mask cannot address an element. A message
+type that contains itself is followed as deep as it is set.
 
 Presence is read as protobuf reads it, the rule carried over from aip-go
 because it was a bug there first: a field with presence — a message, an
@@ -351,72 +300,21 @@ because it was a bug there first: a field with presence — a message, an
 cannot tell unset from zero, so a `REQUIRED` one must be non-zero, and a
 `REQUIRED` `bool` must be `true`.
 
-A `REQUIRED` field in a oneof of a message from *another* package fails
-generation: the check names the oneof's enum by its path within the package,
-which does not reach another package's.
+An operation reaches only messages this run generates. A generated message
+holding one from a file that is *not* generated, with fields of a kind beneath
+it, fails generation, naming both — those fields could not be reached. Generate
+that file too.
 
-aip-go's `ValidateRequiredFields` answers the same, by reflection.
+Handling a whole request — checking a create's resource in full and an
+update's against its mask, naming a create's resource, implying an update's
+mask, each entry of a batch on its own — is built on these traits by the
+service, not generated. aip-go's `ClearFields`, `ValidateFields` and
+`ImpliedFieldMask` answer the same, by reflection.
 
-#### Per request: `validate_required`, `imply_resource_name` and `imply_update_mask`
-
-A server holds a request, not a resource, so these are also generated on
-every service method's create, update and batch request — and on a batch's
-entry type — applying the resource's items the way the method asks:
-
-| Request | Recognized by | `validate_required` | `imply_resource_name` | `imply_update_mask` |
-| --- | --- | --- | --- | --- |
-| create (AIP-133) | a singular field of a resource type, no `update_mask` | `resource.validate_required_fields(None)` | with a `<resource field>_id` string: mints an omitted id with `new_id`, copies `parent` onto the resource's own, and builds `name` from the pattern | — |
-| update (AIP-134) | that, plus a `google.protobuf.FieldMask update_mask` | `resource.validate_required_fields(Some(mask))`; an unset mask names nothing, never a create | — (the name selects the target) | fills an unset or empty mask from `resource.implied_update_mask()` |
-| batch (AIP-233/235) | a repeated `requests` of creates or updates | each entry's, under `requests[i]` | each create entry's | each update entry's |
-
-The name's shape is read off the resource's first pattern at generation time,
-so the emitted code only formats: a top-level pattern puts the id after its
-literal prefix (`orders/{order}` names `orders/<id>`), a nested one under the
-request's `parent` and the collection segment
-(`orders/{order}/lines/{line}` names `<parent>/lines/<id>`). An id the client
-sent is kept as is — its format is for the request's protovalidate rules.
-
-```rust
-impl aip::FieldBehavior for CreateOrderRequest {
-    fn validate_required(&self) -> Result<(), aip::RequiredError> { /* ... */ }
-    fn imply_resource_name(&mut self, new_id: &mut dyn FnMut() -> String) {
-        if let Some(resource) = self.order.as_option_mut() {
-            if self.order_id.is_empty() {
-                self.order_id = new_id();
-            }
-            resource.name = format!("orders/{}", self.order_id);
-        }
-    }
-}
-```
-
-A failing path is an `aip::FieldPath` from the request —
-`requests[1].order.title` — carrying field names only; a server that reports a
-protovalidate violation resolves numbers and types from its descriptor pool.
-The trait's own `imply_request` runs `imply_resource_name` then
-`imply_update_mask`, so one interceptor covers every request:
-
-```rust
-use aip::FieldBehavior;
-
-request.clear_output_only();
-request.imply_request(&mut || uuid::Uuid::now_v7().to_string());
-if let Err(error) = request.validate_required() {
-    for path in &error.paths {
-        // a `required` violation at `path`
-    }
-}
-```
-
-The calls go through the resource's own impl, and a batch's through its entry
-type's, so their files have to be generated in the same run; generation fails
-otherwise. aip-go's `ValidateRequired`, `ImplyResourceName`, `ImplyUpdateMask`
-and `ImplyRequest` answer the same, by reflection.
-
-What *is* still worth a lint is the inverse of the old one: a `REQUIRED` field
-on a resource that also carries `(buf.validate.field).required` is one every
-partial update that omits it is rejected for. That belongs in
-[protoc-gen-aip-lint](https://github.com/protoc-contrib/protoc-gen-aip-lint).
+A `REQUIRED` field on a resource that also carries
+`(buf.validate.field).required` is one every partial update that omits it is
+rejected for; [protoc-gen-aip-lint](https://github.com/protoc-contrib/protoc-gen-aip-lint)'s
+`resource-required-rejects-zero` reports it.
 
 ### Resource names
 
@@ -557,16 +455,13 @@ for `FooView<'_>` as well. The bodies are token-identical: a view's field holds
 `&str` where the owned message holds `String`, and every operation these
 accessors perform is spelled the same for both.
 
-`aip::FieldBehavior` is not implemented for views. Its clearing walks take
-`&mut self`, and a view does not own what they would clear; implying a mask
-means writing it onto the request, which is the owned message's job.
+`aip::FieldBehavior` and `aip::Resource` are not implemented for views.
+`clear_fields` takes `&mut self`, and a view does not own what it would clear;
+an implied mask is written onto the request, which is the owned message's job.
 
 Off by default, and it has to be: nothing in a `CodeGeneratorRequest` says
 whether buffa generated views, and emitting `impl FooView<'_>` when it did not
 is a compile error in the consumer rather than a missing method.
-
-`MUTABLE_PATHS` needs no view either — it is an associated constant on the
-resource, so there is nothing for a view to borrow.
 
 ### Or skip the packaging output: `packaging=false`
 
