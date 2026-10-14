@@ -27,7 +27,7 @@ Every pass is implemented.
 | `impl aip::FieldBehavior` on every message: `clear_fields(kind)`, `validate_fields(kind, scope)` | AIP-203: unset the fields of a behavior, recursive through singular, repeated, map and oneof fields; report those of them a `FieldScope` contains that are unset, recursive through singular and oneof fields. One arm per kind a message carries; an empty impl, the trait's "nothing to do" defaults, when it carries none |
 | `impl aip::Resource` on every resource: `type Name`, `parse_name`, `implied_field_mask` | AIP-122/134: the typed name, and the field mask an update of the resource implies when it omits one |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
-| `impl aip::ResourceWrites` on every request, a `PROCEDURES` table per package (`connect=true`, the default) | AIP-133/134/233/235: the resources a create, update or batch request writes, and each method's message types, which aip-rs's `FieldBehaviorInterceptor` is driven by |
+| `impl aip::ResourceWrites` on every request, a `PROCEDURES` table per package (`connect=true`, the default) | AIP-133/134/233/234: the resources a create, update or batch request writes, and each method's message types, which aip-rs's `FieldBehaviorInterceptor` is driven by |
 
 Which operation a service applies, with which kind, to which message of a
 request — `REQUIRED` checked in full on a create and against the mask on an
@@ -179,9 +179,12 @@ google.protobuf.FieldMask update_mask = 2 [
 
 It already matches subpaths and reports as an ordinary violation under rule id
 `field_mask.in`. protoc-gen-aip-lint's `update-mask-writable-fields` rule keeps
-that list equal to the writable fields. **Stricter than AIP-161, on purpose**:
-AIP-161 has a mask naming an `OUTPUT_ONLY` field ignored; `field_mask.in`
-rejects it, which is the clearer error.
+that list equal to the writable fields. A path naming an `OUTPUT_ONLY` field is
+ignored rather than rejected, as AIP-203 has a server do: aip-rs's
+`FieldBehaviorInterceptor` drops such paths from an explicit mask first, with
+`aip::Resource::clear_field_mask` -- built on the generated `validate_fields` --
+so `field_mask.in` only sees what remains. Any other path outside the list,
+such as `name`, is still rejected.
 
 `*`, full replacement, is not expanded here either: a service that accepts it
 expands it to the writable fields itself, e.g. from the schema's descriptors
@@ -309,11 +312,17 @@ holding one from a file that is *not* generated, with fields of a kind beneath
 it, fails generation, naming both — those fields could not be reached. Generate
 that file too.
 
-Handling a whole request — checking a create's resource in full and an
-update's against its mask, naming a create's resource, implying an update's
-mask, each entry of a batch on its own — is built on these traits by the
-service, not generated. aip-go's `ClearFields`, `ValidateFields` and
-`ImpliedFieldMask` answer the same, by reflection.
+Handling a whole request is not left to the service either: with `connect=true`
+every request gets an `aip::ResourceWrites` impl, saying which resources it
+writes and how -- a create with its `<resource>_id`, an update with its
+`update_mask`, each entry of a batch under `requests[i]` -- and each package a
+`PROCEDURES` table, which aip-rs's `FieldBehaviorInterceptor` applies these
+traits through: checking a create's resource in full and an update's against
+its mask, minting an omitted id, implying an omitted mask (see [The
+interceptor's inputs](#the-interceptors-inputs-connecttrue)). Naming a create's
+resource stays the service's, from the request's `parent` and id. aip-go's
+`ClearFields`, `ValidateFields` and `ImpliedFieldMask` answer the same, by
+reflection.
 
 A `REQUIRED` field on a resource that also carries
 `(buf.validate.field).required` is one every partial update that omits it is
