@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use crate::emit::{doc, short_name};
+use crate::emit::{doc, impl_for, short_name};
 use crate::idents::snake_case;
 use crate::messages::{Field, Index, Kind, Message};
 
@@ -147,22 +147,25 @@ fn env_name(fqn: &str, package: &str) -> String {
     format!("{}_FILTER_ENV", words.join("_").to_uppercase())
 }
 
-/// Emits the filter environment for every `List` request declared in one file.
+/// Emits the filter environment for every `List` request declared in one file,
+/// and `parse_filter` on the request -- on its borrowed `*View` too when
+/// `views` is set, like the other accessors.
 #[must_use]
 pub fn emit_file(
     file: &str,
     index: &Index,
     requests: &BTreeMap<String, ListRequest>,
+    views: bool,
 ) -> TokenStream {
     let items: Vec<TokenStream> = index
         .in_file(file)
         .filter_map(|message| requests.get(&message.fqn))
-        .filter_map(|list| emit_request(list, index))
+        .filter_map(|list| emit_request(list, index, views))
         .collect();
     quote! { #( #items )* }
 }
 
-fn emit_request(list: &ListRequest, index: &Index) -> Option<TokenStream> {
+fn emit_request(list: &ListRequest, index: &Index, views: bool) -> Option<TokenStream> {
     let request = index.get(&list.request)?;
     let resource = index.get(&list.resource)?;
     let resource_short = short_name(&resource.fqn);
@@ -221,6 +224,24 @@ fn emit_request(list: &ListRequest, index: &Index) -> Option<TokenStream> {
          If the expression is not valid CEL.",
     ));
 
+    let parse_filter = impl_for(
+        &path,
+        views,
+        &quote! {
+            #method_doc
+            pub fn parse_filter(
+                &self,
+            ) -> ::core::result::Result<::core::option::Option<::cel::Program>, ::cel::ParseErrors>
+            {
+                let filter: &str = #filter;
+                if filter.trim().is_empty() {
+                    return ::core::result::Result::Ok(::core::option::Option::None);
+                }
+                #env.compile(filter).map(::core::option::Option::Some)
+            }
+        },
+    );
+
     Some(quote! {
         #env_doc
         pub static #env: ::std::sync::LazyLock<::std::sync::Arc<::cel::Env>> =
@@ -238,19 +259,7 @@ fn emit_request(list: &ListRequest, index: &Index) -> Option<TokenStream> {
                 ::std::sync::Arc::new(env)
             });
 
-        impl #path {
-            #method_doc
-            pub fn parse_filter(
-                &self,
-            ) -> ::core::result::Result<::core::option::Option<::cel::Program>, ::cel::ParseErrors>
-            {
-                let filter: &str = #filter;
-                if filter.trim().is_empty() {
-                    return ::core::result::Result::Ok(::core::option::Option::None);
-                }
-                #env.compile(filter).map(::core::option::Option::Some)
-            }
-        }
+        #parse_filter
     })
 }
 

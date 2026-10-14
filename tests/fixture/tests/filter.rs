@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use aip_fixture::aip_gen::example::v1::LIST_VOLUMES_FILTER_ENV;
-use aip_fixture::proto::example::v1::ListVolumesRequest;
+use aip_fixture::proto::example::v1::{ListVolumesRequest, ListVolumesRequestOwnedView};
 use cel::common::ast::Expr;
 use cel::{Context, Value};
 
@@ -42,6 +42,25 @@ fn parses_a_filter() {
     let references = program.references();
     assert!(references.has_variable("title"));
     assert!(references.has_variable("read_count"));
+}
+
+#[test]
+fn parses_a_filter_on_the_view_too() {
+    // A connectrpc handler holds the borrowed form, so `parse_filter` is
+    // emitted on it like the other accessors.
+    let owned = request(r#"title == "demo""#);
+    let view = ListVolumesRequestOwnedView::from_owned(&owned).unwrap();
+    let program = view
+        .view()
+        .parse_filter()
+        .unwrap()
+        .expect("a filter was given");
+    assert!(program.references().has_variable("title"));
+    assert!(request("").parse_filter().unwrap().is_none());
+
+    let blank = request("  ");
+    let blank = ListVolumesRequestOwnedView::from_owned(&blank).unwrap();
+    assert!(blank.view().parse_filter().unwrap().is_none());
 }
 
 #[test]
