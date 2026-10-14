@@ -334,7 +334,10 @@ fn emit_pattern_struct(
 
     // A scan only ever yields `&str`, so a segment declared as something
     // narrower is converted here, and a failed conversion is reported as one
-    // more way the name does not match the pattern.
+    // more way the name does not match the pattern. A UUID must be in the
+    // canonical lowercase, hyphenated form, the one it formats back to:
+    // `uuid` also reads uppercase, braced, `urn:uuid:` and unhyphenated text,
+    // and a name read from one would not round-trip (AIP-122).
     let assignments: Vec<TokenStream> = segments
         .iter()
         .zip(&fields)
@@ -349,6 +352,16 @@ fn emit_pattern_struct(
                     let variable = Literal::string(&segment.name);
                     quote! {
                         #field: match <::uuid::Uuid as ::core::str::FromStr>::from_str(ids[#index]) {
+                            ::core::result::Result::Ok(value)
+                                if &*value.hyphenated().encode_lower(&mut ::uuid::Uuid::encode_buffer())
+                                    != ids[#index] =>
+                            {
+                                return ::core::result::Result::Err(Self::compiled().invalid_value(
+                                    name,
+                                    #variable,
+                                    ::std::format!("{:?} is not a canonical lowercase UUID", ids[#index]),
+                                ));
+                            }
                             ::core::result::Result::Ok(value) => value,
                             ::core::result::Result::Err(error) => {
                                 return ::core::result::Result::Err(
@@ -1004,7 +1017,7 @@ fn emit_create_id(
         quote! { &self.#ident }
     };
     let name_type = format_ident!("{}", resource.name_type());
-    let variable = Literal::string(&segment.name);
+    let field_name = Literal::string(&field.name);
 
     let method_doc = doc(&format!(
         "The ID the caller proposed for the `{}` being created, or `None` when \
@@ -1020,18 +1033,18 @@ fn emit_create_id(
          `google.api.field_info`. A `string` ID gets no accessor: what a valid \
          one is, the schema does not state.\n\n\
          # Errors\n\n\
-         If the caller proposed an ID that is not a UUID, or is the nil UUID, \
-         which no `{}` validates with. Reported as the same \
-         [`ParseError`](::aip::resource::ParseError) an unparseable `{}` segment \
-         produces when reading a whole name, so a call site handles one error \
-         type either way.",
+         If the caller proposed an ID that is not a canonical lowercase UUID, \
+         or is the nil UUID, which no `{}` validates with. Reported as a \
+         [`ParseError`](::aip::resource::ParseError) naming the field -- \
+         `parse {} \"abc\": ...`, as aip-go's accessor reports it -- so a call \
+         site handles one error type for an id and a name alike.",
         resource.resource_type,
         field.name,
         field.name,
         resource.name_type(),
         buffa_codegen::idents::make_field_ident(&format!("{}_id", snake_case(&segment.name))),
         resource.name_type(),
-        segment.name,
+        field.name,
     ));
 
     Some(impl_for(
@@ -1052,17 +1065,27 @@ fn emit_create_id(
                 match <::uuid::Uuid as ::core::str::FromStr>::from_str(id) {
                     // The nil UUID parses, but no name built from it validates.
                     ::core::result::Result::Ok(value) if value.is_nil() => {
-                        ::core::result::Result::Err(#name_type::compiled().invalid_value(
+                        ::core::result::Result::Err(#name_type::compiled().invalid_id(
+                            #field_name,
                             id,
-                            #variable,
                             "the nil UUID is not an ID",
+                        ))
+                    }
+                    // As a name's segment: the form it formats back to, only.
+                    ::core::result::Result::Ok(value)
+                        if &*value.hyphenated().encode_lower(&mut ::uuid::Uuid::encode_buffer()) != id =>
+                    {
+                        ::core::result::Result::Err(#name_type::compiled().invalid_id(
+                            #field_name,
+                            id,
+                            "not a canonical lowercase UUID",
                         ))
                     }
                     ::core::result::Result::Ok(value) => {
                         ::core::result::Result::Ok(::core::option::Option::Some(value))
                     }
                     ::core::result::Result::Err(error) => ::core::result::Result::Err(
-                        #name_type::compiled().invalid_value(id, #variable, error),
+                        #name_type::compiled().invalid_id(#field_name, id, error),
                     ),
                 }
             }
