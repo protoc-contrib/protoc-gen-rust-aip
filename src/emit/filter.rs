@@ -388,12 +388,12 @@ mod plan_tests {
     #[test]
     fn go_aip_s_conditions_each_rule_one_out() {
         // A streaming method.
-        assert!(
+        assert_eq!(
             planned(vec![api(
                 vec![service(vec![method(".api.ListThingsRequest", true)])],
                 false
-            )])
-            .is_empty()
+            )]),
+            Vec::<String>::new()
         );
         // A service in another file.
         let elsewhere = FileDescriptorProto {
@@ -402,22 +402,25 @@ mod plan_tests {
             service: vec![service(vec![method(".api.ListThingsRequest", false)])],
             ..Default::default()
         };
-        assert!(planned(vec![api(vec![], false), elsewhere]).is_empty());
+        assert_eq!(
+            planned(vec![api(vec![], false), elsewhere]),
+            Vec::<String>::new()
+        );
         // A nested request.
-        assert!(
+        assert_eq!(
             planned(vec![api(
                 vec![service(vec![method(".api.Outer.NestedRequest", false)])],
                 false
-            )])
-            .is_empty()
+            )]),
+            Vec::<String>::new()
         );
         // A resource with no field that has a CEL type.
-        assert!(
+        assert_eq!(
             planned(vec![api(
                 vec![service(vec![method(".api.ListThingsRequest", false)])],
                 true
-            )])
-            .is_empty()
+            )]),
+            Vec::<String>::new()
         );
     }
 }
