@@ -533,6 +533,10 @@ fn emit_validate(
             reason = "collapsing a test and a binding takes a let chain, which needs edition 2024"
         )]
         #[allow(
+            clippy::collapsible_match,
+            reason = "a kind with one annotated field is an arm holding one test, and a match guard would give it a different shape from a kind with several"
+        )]
+        #[allow(
             clippy::too_many_lines,
             reason = "one statement per annotated field, spelled out at generation time"
         )]
