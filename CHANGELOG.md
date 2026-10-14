@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.6.0...v0.6.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* keep generated code clippy-clean on current stable ([#50](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/50)) ([edc8cd0](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/edc8cd027d07ead6150a214292678395f7913abb))
+
 ## [0.6.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.5.0...v0.6.0) (2026-10-14)
 
 
