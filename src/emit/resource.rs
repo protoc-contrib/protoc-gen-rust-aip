@@ -601,6 +601,15 @@ struct ParentBinding {
     builder: TokenStream,
 }
 
+/// The field initializer that carries `field` over from `self`: a copy for a
+/// `Uuid` segment, a clone for a string one.
+fn carry(segment: &Segment, field: &proc_macro2::Ident) -> TokenStream {
+    match segment.format {
+        Format::String => quote! { #field: ::core::clone::Clone::clone(&self.#field) },
+        Format::Uuid => quote! { #field: self.#field },
+    }
+}
+
 fn emit_parent(
     resource: &Resource,
     name_type: &proc_macro2::Ident,
@@ -627,9 +636,12 @@ fn emit_parent(
     let matched = &parent.patterns[index];
     let parent_fields: Vec<proc_macro2::Ident> =
         matched.variables().map(|s| id_field(&s.name)).collect();
-    let carried: Vec<TokenStream> = parent_fields
-        .iter()
-        .map(|field| quote! { #field: ::core::clone::Clone::clone(&self.#field) })
+    // The segments the parent carries, read off this resource: a `Uuid` is
+    // `Copy`, so only a string segment is cloned.
+    let carried: Vec<TokenStream> = pattern
+        .variables()
+        .zip(&parent_fields)
+        .map(|(segment, field)| carry(segment, field))
         .collect();
     let construct = quote! { #variant_path { #( #carried, )* } };
     let construct = if parent.is_multi_pattern() {
@@ -665,9 +677,10 @@ fn emit_parent(
             Format::Uuid => quote! { #field: ::uuid::Uuid },
         })
         .collect();
-    let from_parent: Vec<TokenStream> = parent_fields
-        .iter()
-        .map(|field| quote! { #field: ::core::clone::Clone::clone(&self.#field) })
+    let from_parent: Vec<TokenStream> = matched
+        .variables()
+        .zip(&parent_fields)
+        .map(|(segment, field)| carry(segment, field))
         .collect();
     let from_args: Vec<TokenStream> = own
         .iter()
