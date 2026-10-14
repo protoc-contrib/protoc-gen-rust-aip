@@ -15,8 +15,14 @@ use aip_fixture::proto::example::v1::{Address, Carrier, Meter, Parcel, Unit, met
 
 #[test]
 fn an_empty_resource_implies_an_empty_mask() {
-    assert!(Shipment::default().implied_field_mask().paths.is_empty());
-    assert!(Meter::default().implied_field_mask().paths.is_empty());
+    assert_eq!(
+        Shipment::default().implied_field_mask().paths,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        Meter::default().implied_field_mask().paths,
+        Vec::<String>::new()
+    );
 }
 
 #[test]
@@ -53,13 +59,13 @@ fn never_implies_a_field_an_update_may_not_write() {
         etag: "e1".to_owned(),
         ..Default::default()
     };
-    assert!(shipment.implied_field_mask().paths.is_empty());
+    assert_eq!(shipment.implied_field_mask().paths, Vec::<String>::new());
 
     let meter = Meter {
         serial: "s1".to_owned(),
         ..Default::default()
     };
-    assert!(meter.implied_field_mask().paths.is_empty());
+    assert_eq!(meter.implied_field_mask().paths, Vec::<String>::new());
 }
 
 #[test]
@@ -483,7 +489,7 @@ fn one_generic_layer_handles_every_generated_message() {
         scac: "SERVER".to_owned(),
         ..Default::default()
     };
-    assert!(admit(&mut carrier).is_empty());
+    assert_eq!(admit(&mut carrier), Vec::<String>::new());
     assert_eq!(carrier.scac, "");
 
     // A resource gets its own checks through the same layer.

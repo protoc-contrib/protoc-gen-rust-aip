@@ -122,13 +122,13 @@ fn a_nested_create_gets_an_id_and_its_output_only_parent_cleared() {
         ..Default::default()
     };
     prepare(&mut request).expect("a complete line");
-    assert!(!request.line_id.is_empty());
+    assert_ne!(request.line_id, "");
     assert_eq!(request.parent, "orders/o1");
     assert!(
         request.line.parent.is_empty(),
         "OUTPUT_ONLY, and not copied on"
     );
-    assert!(request.line.name.is_empty());
+    assert_eq!(request.line.name, "");
 }
 
 #[test]
@@ -268,7 +268,7 @@ fn a_unary_procedure_prepares_the_request_it_receives() {
     let request = payload
         .message::<CreateOrderRequest>()
         .expect("still a CreateOrderRequest");
-    assert!(!request.order_id.is_empty());
+    assert_ne!(request.order_id, "");
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn a_streaming_procedure_clears_input_only_on_what_it_sends() {
     );
     (procedure.outbound)(&mut payload).expect("an Order");
     let order = payload.message::<Order>().expect("still an Order");
-    assert!(order.coupon.is_empty());
+    assert_eq!(order.coupon, "");
     assert_eq!(order.title, "Lamp");
 }
 

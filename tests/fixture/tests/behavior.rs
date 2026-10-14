@@ -42,7 +42,7 @@ fn clears_output_only_fields_of_every_shape() {
 
     assert_eq!(shipment.reference, "keep me", "a client field must survive");
     assert_eq!(shipment.tracking_id, "");
-    assert!(shipment.audit_log.is_empty());
+    assert_eq!(shipment.audit_log, Vec::<String>::new());
     assert_eq!(shipment.revision, 0);
     // Carrying IMMUTABLE as well as OUTPUT_ONLY still counts as output-only.
     assert_eq!(shipment.etag, "");
