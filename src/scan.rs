@@ -191,6 +191,8 @@ pub struct MessageBinding {
     /// The proto name of the field holding the resource name — `name` unless
     /// the annotation says otherwise.
     pub name_field: String,
+    /// That field's number, which a `FieldError` names it by.
+    pub name_field_number: u32,
     /// Whether that field has explicit presence, and so is an `Option<String>`
     /// rather than a `String` on the generated message.
     pub name_field_optional: bool,
@@ -239,6 +241,8 @@ pub struct Reference {
     pub rust_path: String,
     /// The proto name of the referring field, e.g. `parent`.
     pub field_name: String,
+    /// That field's number, which a `FieldError` names it by.
+    pub field_number: u32,
     /// Whether that field has explicit presence, and so is an `Option<String>`
     /// rather than a `String` on the generated message.
     pub field_optional: bool,
@@ -600,6 +604,7 @@ fn walk_message(
         let binding = MessageBinding {
             rust_path: rust_path(parents, name),
             name_field: name_field.to_owned(),
+            name_field_number: field_number(field),
             name_field_optional: scope.is_option(field),
         };
         let resource = build(&descriptor, source_file, package, Some(binding))?;
@@ -850,9 +855,16 @@ fn resolve_reference(
     Resolution::Resolved(Reference {
         rust_path: rust_path(parents, message_name),
         field_name,
+        field_number: field_number(field),
         field_optional: scope.is_option(field),
         resource,
     })
+}
+
+/// A field's number. A descriptor always carries one; zero stands for a
+/// malformed one rather than failing a request over it.
+fn field_number(field: &FieldDescriptorProto) -> u32 {
+    u32::try_from(field.number.unwrap_or_default()).unwrap_or_default()
 }
 
 /// Whether a field is a singular `string` -- the only shape a resource name can
