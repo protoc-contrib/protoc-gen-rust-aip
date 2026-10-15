@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.7.0...v0.8.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* strict plugin options, canonical lowercase UUIDs, and create-id errors that name the field ([#58](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/58))
+
+### Bug Fixes
+
+* strict plugin options, canonical lowercase UUIDs, and create-id errors that name the field ([#58](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/58)) ([8fecebc](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/8fecebcd0a4e7b71c07d1642d078657d7da8134b))
+
 ## [0.7.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.6.1...v0.7.0) (2026-10-14)
 
 
