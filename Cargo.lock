@@ -40,7 +40,7 @@ dependencies = [
 [[package]]
 name = "aip-rs"
 version = "0.8.0"
-source = "git+https://github.com/protoc-contrib/aip-rs?rev=2b9ba1aaef69dfc984ab8b279adecb671f18b80b#2b9ba1aaef69dfc984ab8b279adecb671f18b80b"
+source = "git+https://github.com/protoc-contrib/aip-rs?rev=97c1e303d7f36629b0a85c1eb33c2e4b59ed55dc#97c1e303d7f36629b0a85c1eb33c2e4b59ed55dc"
 dependencies = [
  "buffa",
  "buffa-protos",
