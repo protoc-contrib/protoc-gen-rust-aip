@@ -539,7 +539,7 @@ fn parse_name_reads_the_identifier_into_the_typed_name() {
         name: "shipments/s1".to_owned(),
         ..Default::default()
     };
-    let name = Resource::parse_name(&shipment).expect("a shipment name");
+    let name = shipment.parse_name().expect("a shipment name");
     assert_eq!(name.to_string(), "shipments/s1");
     assert_eq!(name.pattern(), "shipments/{shipment}");
 
@@ -547,19 +547,6 @@ fn parse_name_reads_the_identifier_into_the_typed_name() {
         name: "parcels/p1".to_owned(),
         ..Default::default()
     };
-    assert!(Resource::parse_name(&shipment).is_err());
-}
-
-#[test]
-fn a_resource_names_its_typed_name() {
-    fn name_of<R: Resource>(resource: &R) -> String {
-        resource
-            .parse_name()
-            .map_or_else(|error| error.to_string(), |name| name.to_string())
-    }
-    let shipment = Shipment {
-        name: "shipments/s2".to_owned(),
-        ..Default::default()
-    };
-    assert_eq!(name_of(&shipment), "shipments/s2");
+    let error = shipment.parse_name().unwrap_err();
+    assert_eq!(error.path().to_string(), "name");
 }

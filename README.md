@@ -25,7 +25,7 @@ Every pass is implemented.
 | Resource names | single and multi-pattern, `name_field`, file-scope `resource_definition`, `resource_reference`, UUID-typed segments, typed `parent()` and parent-to-child builders, across packages |
 | Create IDs | AIP-133 `{resource}_id`: the proposed ID, or `None` for the server to mint one |
 | `impl aip::FieldBehavior` on every message: `clear_fields(kind)`, `validate_fields(kind, scope)` | AIP-203: unset the fields of a behavior, recursive through singular, repeated, map and oneof fields; report those of them a `FieldScope` contains that are unset, recursive through singular and oneof fields. One arm per kind a message carries; an empty impl, the trait's "nothing to do" defaults, when it carries none |
-| `impl aip::Resource` on every resource: `type Name`, `parse_name`, `implied_field_mask` | AIP-122/134: the typed name, and the field mask an update of the resource implies when it omits one |
+| `impl aip::Resource` on every resource: `implied_field_mask` | AIP-134: the field mask an update of the resource implies when it omits one |
 | Filter environment | AIP-160: a CEL `Env` per List request, and `parse_filter` to compile a `filter` in it |
 | `impl aip::ResourceWrites` on every request, a `PROCEDURES` table per package (`connect=true`, the default) | AIP-133/134/233/234: the resources a create, update or batch request writes, and each method's message types, which aip-rs's `FieldBehaviorInterceptor` is driven by |
 
@@ -130,8 +130,6 @@ impl aip::FieldBehavior for Shipment {
 }
 
 impl aip::Resource for Shipment {
-    type Name = ShipmentName;
-    fn parse_name(&self) -> Result<ShipmentName, <ShipmentName as FromStr>::Err> { self.name.parse() }
     fn implied_field_mask(&self) -> buffa_types::FieldMask { /* the writable fields set */ }
 }
 
@@ -194,7 +192,8 @@ with aip-rs's `descriptor` feature.
 
 ```rust
 impl CreateCollectionRequest {
-    pub fn parse_collection_id(&self) -> Result<Option<uuid::Uuid>, aip::resource::ParseError>;
+    pub fn parse_collection_id(&self)
+        -> Result<Option<uuid::Uuid>, aip::FieldError<aip::resource::ParseError>>;
 }
 
 // A server fills the empty case with the UUID it mints:
@@ -216,7 +215,8 @@ does not say which pattern it is creating under, so neither gets an accessor
 rather than getting a guess. A proposed nil UUID is refused too: it parses,
 but no name built from it validates. A failure is reported as the same
 `ParseError` an unparseable segment produces when reading a whole name, so a
-call site handles one error type either way.
+call site handles one error type either way, in a `FieldError` that names the
+field (`collection_id`).
 
 Needs no `uuid` feature beyond its defaults: the generated code only parses.
 A server needs whichever minting feature it calls — `v7` for `now_v7`.
@@ -461,6 +461,34 @@ async fn create_item(&self, ctx: RequestContext, request: ServiceRequest<'_, Cre
     let parent = request.parse_parent()?;   // needs views=true
 }
 ```
+
+### Which field failed
+
+Every accessor that parses a message's own field -- `parse_name`,
+`parse_full_name`, `parse_<reference>` and `parse_<resource>_id` -- returns the
+failure inside an `aip::FieldError`, which carries the field as an
+`aip::FieldPath` with its number and type filled in, as a protovalidate
+violation names a field:
+
+```rust
+impl Shipment {
+    pub fn parse_name(&self)
+        -> Result<ShipmentName, aip::FieldError<aip::resource::ParseError>> {
+        ShipmentName::parse(&self.name).map_err(|error| {
+            aip::FieldError::new(aip::FieldPath::field("name", 1, aip::FieldType::String), error)
+        })
+    }
+}
+
+let error = request.parse_name().unwrap_err();
+assert_eq!(error.path().to_string(), "name");   // where it failed
+// error.to_string() is `name: parse "...": ...`, and std::error::Error::source()
+// is the ParseError. A handler names the field in a google.rpc.BadRequest with it.
+```
+
+A caller holding the message inside another puts the path where it is with
+`FieldError::prefixed`. `ShipmentName::parse` and `parse_full`, which parse a
+string and not a field, still return the bare `ParseError`.
 
 With `views=true` every read-only accessor — `parse_name`, `parse_full_name`,
 `parse_<reference>`, `parse_<resource>_id`, `parse_filter` — is emitted

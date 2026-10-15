@@ -751,28 +751,35 @@ fn emit_message_accessors(
         "Parses `{}` as a `{}` resource name.\n\n\
          # Errors\n\n\
          If the field does not hold a name of this resource; see \
-         [`{name_type}::parse`].",
-        binding.name_field, resource.resource_type,
+         [`{name_type}::parse`], which the [`FieldError`](::aip::FieldError) \
+         names `{}` for.",
+        binding.name_field, resource.resource_type, binding.name_field,
     ));
     let parse_full_doc = doc(&format!(
         "Parses `{}` as a fully-qualified `{}` resource name.\n\n\
          # Errors\n\n\
          If the field does not hold a fully-qualified name of this resource; \
-         see [`{name_type}::parse_full`].",
-        binding.name_field, resource.resource_type,
+         see [`{name_type}::parse_full`], which the \
+         [`FieldError`](::aip::FieldError) names `{}` for.",
+        binding.name_field, resource.resource_type, binding.name_field,
     ));
+    let at = field_at(&binding.name_field, binding.name_field_number);
     impl_for(
         &message,
         views,
         &quote! {
             #parse_doc
-            pub fn parse_name(&self) -> ::core::result::Result<#name_type, #error> {
-                #name_type::parse(#value)
+            pub fn parse_name(
+                &self,
+            ) -> ::core::result::Result<#name_type, ::aip::FieldError<#error>> {
+                #name_type::parse(#value).map_err(|error| ::aip::FieldError::new(#at, error))
             }
 
             #parse_full_doc
-            pub fn parse_full_name(&self) -> ::core::result::Result<#name_type, #error> {
-                #name_type::parse_full(#value)
+            pub fn parse_full_name(
+                &self,
+            ) -> ::core::result::Result<#name_type, ::aip::FieldError<#error>> {
+                #name_type::parse_full(#value).map_err(|error| ::aip::FieldError::new(#at, error))
             }
         },
     )
@@ -807,19 +814,31 @@ fn emit_reference(
     let method_doc = doc(&format!(
         "Parses `{}` as the `{}` resource name it references.\n\n\
          # Errors\n\n\
-         If the field does not hold a name of that resource.",
-        reference.field_name, resource.resource_type,
+         If the field does not hold a name of that resource; the \
+         [`FieldError`](::aip::FieldError) names `{}` for it.",
+        reference.field_name, resource.resource_type, reference.field_name,
     ));
+    let at = field_at(&reference.field_name, reference.field_number);
     impl_for(
         &message,
         views,
         &quote! {
             #method_doc
-            pub fn #method(&self) -> ::core::result::Result<#name_path, #error> {
-                #name_path::parse(#value)
+            pub fn #method(
+                &self,
+            ) -> ::core::result::Result<#name_path, ::aip::FieldError<#error>> {
+                #name_path::parse(#value).map_err(|error| ::aip::FieldError::new(#at, error))
             }
         },
     )
+}
+
+/// The `aip::FieldPath` to the `string` field `name`, numbered `number`: where a
+/// `FieldError` from parsing it says the failure is.
+fn field_at(name: &str, number: u32) -> TokenStream {
+    let name = Literal::string(name);
+    let number = Literal::u32_unsuffixed(number);
+    quote! { ::aip::FieldPath::field(#name, #number, ::aip::FieldType::String) }
 }
 
 /// The Rust type names for each pattern of a multi-pattern resource.
@@ -1018,6 +1037,7 @@ fn emit_create_id(
     };
     let name_type = format_ident!("{}", resource.name_type());
     let field_name = Literal::string(&field.name);
+    let at = field_at(&field.name, u32::try_from(field.number).unwrap_or_default());
 
     let method_doc = doc(&format!(
         "The ID the caller proposed for the `{}` being created, or `None` when \
@@ -1036,8 +1056,9 @@ fn emit_create_id(
          If the caller proposed an ID that is not a canonical lowercase UUID, \
          or is the nil UUID, which no `{}` validates with. Reported as a \
          [`ParseError`](::aip::resource::ParseError) naming the field -- \
-         `parse {} \"abc\": ...`, as aip-go's accessor reports it -- so a call \
-         site handles one error type for an id and a name alike.",
+         `parse {} \"abc\": ...`, as aip-go's accessor reports it -- in a \
+         [`FieldError`](::aip::FieldError) that names it too, so a call site \
+         handles one error type for an id and a name alike.",
         resource.resource_type,
         field.name,
         field.name,
@@ -1056,13 +1077,13 @@ fn emit_create_id(
                 &self,
             ) -> ::core::result::Result<
                 ::core::option::Option<::uuid::Uuid>,
-                ::aip::resource::ParseError,
+                ::aip::FieldError<::aip::resource::ParseError>,
             > {
                 let id: &str = #value;
                 if id.is_empty() {
                     return ::core::result::Result::Ok(::core::option::Option::None);
                 }
-                match <::uuid::Uuid as ::core::str::FromStr>::from_str(id) {
+                let parsed = match <::uuid::Uuid as ::core::str::FromStr>::from_str(id) {
                     // The nil UUID parses, but no name built from it validates.
                     ::core::result::Result::Ok(value) if value.is_nil() => {
                         ::core::result::Result::Err(#name_type::compiled().invalid_id(
@@ -1087,7 +1108,8 @@ fn emit_create_id(
                     ::core::result::Result::Err(error) => ::core::result::Result::Err(
                         #name_type::compiled().invalid_id(#field_name, id, error),
                     ),
-                }
+                };
+                parsed.map_err(|error| ::aip::FieldError::new(#at, error))
             }
         },
     ))

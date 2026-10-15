@@ -1,6 +1,7 @@
-//! Emits a resource's `aip::Resource` impl: its typed `Name`, `parse_name`, and
-//! `implied_field_mask` — the mask AIP-134 implies when an update omits one.
-//! Their semantics are documented on the trait, in aip-rs.
+//! Emits a resource's `aip::Resource` impl: `implied_field_mask`, the mask
+//! AIP-134 implies when an update omits one. Its semantics are documented on
+//! the trait, in aip-rs. The resource's name is the message's own `parse_name`,
+//! in `resource.rs`, not a part of this trait.
 //!
 //! The implied mask is read off `google.api.field_behavior`: every field an
 //! update may write — not `OUTPUT_ONLY`, `IDENTIFIER` or `IMMUTABLE` — that the
@@ -48,13 +49,6 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
         .rust_path
         .parse()
         .expect("a message path built from proto identifiers is a valid Rust path");
-    let name_type = format_ident!("{}", resource.name_type());
-    let name_field = buffa_codegen::idents::make_field_ident(&binding.name_field);
-    let name = if binding.name_field_optional {
-        quote! { self.#name_field.as_deref().unwrap_or_default() }
-    } else {
-        quote! { self.#name_field }
-    };
     let implied: Vec<TokenStream> = message
         .fields
         .iter()
@@ -80,14 +74,6 @@ fn emit_resource(file: &str, index: &Index, resource: &Resource) -> Option<Token
     };
     Some(quote! {
         impl ::aip::Resource for #path {
-            type Name = #name_type;
-
-            fn parse_name(
-                &self,
-            ) -> ::core::result::Result<#name_type, <#name_type as ::core::str::FromStr>::Err> {
-                #name.parse()
-            }
-
             fn implied_field_mask(&self) -> ::buffa_types::FieldMask {
                 #mutable
                 #( #implied )*

@@ -98,6 +98,14 @@ fn a_message_parses_its_own_name_field() {
         book.parse_name().unwrap(),
         ex::BookName::PublisherBook(_)
     ));
+
+    // A name that does not parse says which field it was.
+    let book = proto::example::v1::Book {
+        name: "shelves/s1/books/b1".to_owned(),
+        ..Default::default()
+    };
+    let error = book.parse_name().unwrap_err();
+    assert_eq!(error.path().to_string(), "name");
 }
 
 #[test]
@@ -116,6 +124,13 @@ fn a_reference_parses_the_field_it_points_at() {
         ..Default::default()
     };
     assert_eq!(request.parse_parent().unwrap().publisher_id, "p1");
+
+    let request = proto::example::v1::CreateBookRequest {
+        parent: "shelves/s1".to_owned(),
+        ..Default::default()
+    };
+    let error = request.parse_parent().unwrap_err();
+    assert_eq!(error.path().to_string(), "parent");
 }
 
 #[test]
@@ -293,6 +308,13 @@ fn an_empty_create_id_is_left_to_the_server() {
     assert_eq!(request.parse_collection_id().unwrap(), None);
 }
 
+/// The `ParseError` a `FieldError` says is wrong with its field.
+fn cause(error: &aip::FieldError<aip::resource::ParseError>) -> &aip::resource::ParseError {
+    std::error::Error::source(error)
+        .and_then(|source| source.downcast_ref())
+        .expect("a ParseError")
+}
+
 #[test]
 fn a_proposed_id_that_is_not_a_uuid_fails_naming_the_field() {
     let request = proto::example::v1::CreateCollectionRequest {
@@ -300,6 +322,9 @@ fn a_proposed_id_that_is_not_a_uuid_fails_naming_the_field() {
         ..Default::default()
     };
     let error = request.parse_collection_id().unwrap_err();
+    // Where, structurally, beside the text below.
+    assert_eq!(error.path().to_string(), "collection_id");
+    let error = cause(&error);
     // The same error type a whole name produces, naming the request field the
     // caller sent rather than a segment of a name they did not: as aip-go's
     // `ParseCollectionID` reports it.
@@ -323,6 +348,8 @@ fn a_proposed_id_that_is_not_a_canonical_lowercase_uuid_is_rejected() {
             ..Default::default()
         };
         let error = request.parse_collection_id().unwrap_err();
+        assert_eq!(error.path().to_string(), "collection_id");
+        let error = cause(&error);
         assert_eq!(
             error.to_string(),
             format!("parse collection_id {id:?}: not a canonical lowercase UUID")
@@ -339,6 +366,8 @@ fn a_proposed_nil_uuid_is_rejected() {
         ..Default::default()
     };
     let error = request.parse_collection_id().unwrap_err();
+    assert_eq!(error.path().to_string(), "collection_id");
+    let error = cause(&error);
     assert_eq!(
         error.to_string(),
         format!(
@@ -373,6 +402,15 @@ fn the_accessors_are_emitted_for_views_too() {
     };
     let book = proto::example::v1::BookOwnedView::from_owned(&book).unwrap();
     assert!(book.view().parse_name().is_ok());
+    let bad = proto::example::v1::Book {
+        name: "shelves/s1/books/b1".to_owned(),
+        ..Default::default()
+    };
+    let bad = proto::example::v1::BookOwnedView::from_owned(&bad).unwrap();
+    assert_eq!(
+        bad.view().parse_name().unwrap_err().path().to_string(),
+        "name"
+    );
 
     let request = proto::example::v1::CreateBookRequest {
         parent: "publishers/p1".to_owned(),
@@ -380,6 +418,15 @@ fn the_accessors_are_emitted_for_views_too() {
     };
     let request = proto::example::v1::CreateBookRequestOwnedView::from_owned(&request).unwrap();
     assert_eq!(request.view().parse_parent().unwrap().publisher_id, "p1");
+    let bad = proto::example::v1::CreateBookRequest {
+        parent: "shelves/s1".to_owned(),
+        ..Default::default()
+    };
+    let bad = proto::example::v1::CreateBookRequestOwnedView::from_owned(&bad).unwrap();
+    assert_eq!(
+        bad.view().parse_parent().unwrap_err().path().to_string(),
+        "parent"
+    );
 
     let create = proto::example::v1::CreateCollectionRequest {
         collection_id: ID.to_owned(),
