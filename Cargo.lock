@@ -15,7 +15,7 @@ dependencies = [
 name = "aip-fixture"
 version = "0.8.0"
 dependencies = [
- "aip-rs 0.8.0",
+ "aip-rs 0.9.0",
  "anyhow",
  "buffa",
  "buffa-build",
@@ -39,8 +39,8 @@ dependencies = [
 
 [[package]]
 name = "aip-rs"
-version = "0.8.0"
-source = "git+https://github.com/protoc-contrib/aip-rs?rev=a0c821e50774c3ef4074aa84ebf6257d1250f31a#a0c821e50774c3ef4074aa84ebf6257d1250f31a"
+version = "0.9.0"
+source = "git+https://github.com/protoc-contrib/aip-rs?tag=v0.9.0#2c9f8bb69234ec0ab96593e6ae3affbd50a86564"
 dependencies = [
  "buffa",
  "buffa-protos",
