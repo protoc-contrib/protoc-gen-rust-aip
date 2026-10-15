@@ -95,7 +95,7 @@ pub fn emit_file(
 ///
 /// A method of any cardinality is `Procedure::new`, the full policy on each
 /// message, unless its request is a well-known type: that has nothing to fill
-/// in or validate, and no `Validate` impl, so it is `Procedure::clearing`,
+/// in or validate, and no `Validate` impl, so it is `Procedure::well_known`,
 /// which clears only.
 ///
 /// # Errors
@@ -123,7 +123,7 @@ pub fn procedures(
         let input = message_type(package, index, generated, options, method, &method.input)?;
         let output = message_type(package, index, generated, options, method, &method.output)?;
         let constructor = if well_known(&method.input).is_some() {
-            quote! { clearing }
+            quote! { well_known }
         } else {
             quote! { new }
         };
