@@ -46,7 +46,7 @@ anyhow = "1"
 # runtime rejects fails `buf generate` instead of panicking in a consumer.
 # Without default features: the plugin needs none of the `connect` runtime the
 # generated code calls into.
-aip = { package = "aip-rs", version = "0.6", default-features = false }
+aip = { package = "aip-rs", version = "0.7", default-features = false }
 
 [dev-dependencies]
 # Regenerates src/generated, to check it is current; see tests/generated.rs.

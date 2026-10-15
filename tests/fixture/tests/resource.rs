@@ -183,6 +183,34 @@ fn a_segment_that_is_not_a_uuid_fails_to_parse() {
     );
 }
 
+/// `ID` as `uuid` also reads it, but not as it formats back: uppercase,
+/// braced, as a URN, and without hyphens.
+const NON_CANONICAL: [&str; 4] = [
+    "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
+    "{3f2504e0-4f89-41d3-9a0c-0305e82c3301}",
+    "urn:uuid:3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    "3f2504e04f8941d39a0c0305e82c3301",
+];
+
+#[test]
+fn a_segment_that_is_not_a_canonical_lowercase_uuid_fails_to_parse() {
+    for id in NON_CANONICAL {
+        let error = ex::CollectionName::parse(&format!("collections/{id}")).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                aip::resource::ParseErrorKind::InvalidValue { name, reason }
+                    if name == "collection" && reason == &format!("{id:?} is not a canonical lowercase UUID")
+            ),
+            "{id}: {error}"
+        );
+    }
+    // A child's inherited segment is held to the same form.
+    assert!(
+        ex::ItemName::parse(&format!("organizations/{}/items/{ID}", NON_CANONICAL[0])).is_err()
+    );
+}
+
 #[test]
 fn a_uuid_id_round_trips_through_display() {
     let name = ex::CollectionName::parse(&format!("collections/{ID}")).unwrap();
@@ -266,18 +294,40 @@ fn an_empty_create_id_is_left_to_the_server() {
 }
 
 #[test]
-fn a_proposed_id_that_is_not_a_uuid_fails_as_that_segment() {
+fn a_proposed_id_that_is_not_a_uuid_fails_naming_the_field() {
     let request = proto::example::v1::CreateCollectionRequest {
         collection_id: "not-a-uuid".to_owned(),
         ..Default::default()
     };
     let error = request.parse_collection_id().unwrap_err();
-    // The same error a whole name carrying that ID would produce, rather than
-    // a second error type at the call site.
+    // The same error type a whole name produces, naming the request field the
+    // caller sent rather than a segment of a name they did not: as aip-go's
+    // `ParseCollectionID` reports it.
     assert!(matches!(
         error.kind(),
-        aip::resource::ParseErrorKind::InvalidValue { name, .. } if name == "collection"
+        aip::resource::ParseErrorKind::InvalidId { field, .. } if field == "collection_id"
     ));
+    assert!(
+        error
+            .to_string()
+            .starts_with(r#"parse collection_id "not-a-uuid": "#),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_proposed_id_that_is_not_a_canonical_lowercase_uuid_is_rejected() {
+    for id in NON_CANONICAL {
+        let request = proto::example::v1::CreateCollectionRequest {
+            collection_id: id.to_owned(),
+            ..Default::default()
+        };
+        let error = request.parse_collection_id().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("parse collection_id {id:?}: not a canonical lowercase UUID")
+        );
+    }
 }
 
 #[test]
@@ -289,10 +339,13 @@ fn a_proposed_nil_uuid_is_rejected() {
         ..Default::default()
     };
     let error = request.parse_collection_id().unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        aip::resource::ParseErrorKind::InvalidValue { name, .. } if name == "collection"
-    ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "parse collection_id {:?}: the nil UUID is not an ID",
+            uuid::Uuid::nil().to_string()
+        )
+    );
 }
 
 #[test]

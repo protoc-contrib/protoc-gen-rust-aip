@@ -30,9 +30,9 @@ dependencies = [
 
 [[package]]
 name = "aip-rs"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "228f8ff859c0fd3271a4491104f379357bdbea15452d5ce46e33db21126d40c7"
+checksum = "b6ca35898c93b231dd2b0add789bc60a075d14a71a26f1ab2b36c1a0996e1140"
 dependencies = [
  "buffa",
  "buffa-types",
