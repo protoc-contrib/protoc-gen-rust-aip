@@ -1,9 +1,9 @@
 //! Exercises the `aip::ResourceWrites` impls and the `PROCEDURES` table
 //! emitted for aip-rs's `FieldBehaviorInterceptor`, through
-//! `aip::connect::prepare` -- what the interceptor does to each request message --
+//! `aip::connect::validate` -- what the interceptor does to each request message --
 //! and through the table's own payload steps.
 
-use aip::connect::prepare;
+use aip::connect::validate;
 use aip_fixture::aip_gen::example::v1::PROCEDURES;
 use aip_fixture::proto::example::v1::{
     BatchCreateOrdersRequest, CreateLineRequest, CreateOrderRequest, Destination, Line, Order,
@@ -65,7 +65,7 @@ fn violations(error: &ConnectError) -> Vec<String> {
         .collect()
 }
 
-/// `request` as `prepare` -- what the interceptor applies to each message --
+/// `request` as `validate` -- what the interceptor applies to each message --
 /// leaves it for the handler, or the error it answers with.
 fn prepared<M>(request: M) -> Result<M, ConnectError>
 where
@@ -79,7 +79,7 @@ where
         + 'static,
 {
     let mut payload = Payload::from_message(request, CodecFormat::Proto);
-    prepare::<M>(&mut payload)?;
+    validate::<M>(&mut payload)?;
     Ok(payload.message::<M>()?.clone())
 }
 

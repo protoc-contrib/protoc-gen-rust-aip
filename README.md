@@ -550,10 +550,10 @@ build from the request's `parent` and id (AIP-133), with the generated
 `parse_parent` and `parse_<resource>_id`.
 
 Each package whose files declare a service gets a `PROCEDURES` table, one
-`aip::Procedure` per method in declaration order: `Procedure::new`, the full
+`aip::Procedure` per method in declaration order: `Procedure::validate`, the full
 policy on each message, unary or streamed. A well-known type is named from
 buffa-types, which aip-rs gives an empty `FieldBehavior`; a method whose
-request is one is `Procedure::well_known`, which clears only, as there is
+request is one is `Procedure::clear`, which clears only, as there is
 nothing to fill in or validate. Any other message type this run does not
 generate fails generation, naming the method.
 
