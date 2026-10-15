@@ -93,7 +93,7 @@ pub fn emit_file(
 /// generated files' services declare, in declaration order, or `None` when
 /// they declare none.
 ///
-/// A method of any cardinality is `Procedure::validate`, the full policy on each
+/// A method of any cardinality is `Procedure::new`, the full policy on each
 /// message, unless its request is a well-known type: that has nothing to fill
 /// in or validate, and no `Validate` impl, so it is `Procedure::clear`,
 /// which clears only.
@@ -125,7 +125,7 @@ pub fn procedures(
         let constructor = if well_known(&method.input).is_some() {
             quote! { clear }
         } else {
-            quote! { validate }
+            quote! { new }
         };
         entries.push(quote! {
             ::aip::Procedure::#constructor::<#input, #output>(#path)
@@ -585,10 +585,10 @@ mod tests {
             .expect("the package declares a service")
             .to_string();
         assert!(table.contains(
-            "Procedure :: validate :: < CreateBookRequest , crate :: proto :: dep :: Book > (\"/api.Books/CreateBook\")"
+            "Procedure :: new :: < CreateBookRequest , crate :: proto :: dep :: Book > (\"/api.Books/CreateBook\")"
         ));
         assert!(table.contains(
-            "Procedure :: validate :: < GetBookRequest , :: buffa_types :: google :: protobuf :: Empty > (\"/api.Books/GetBook\")"
+            "Procedure :: new :: < GetBookRequest , :: buffa_types :: google :: protobuf :: Empty > (\"/api.Books/GetBook\")"
         ));
     }
 
