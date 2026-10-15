@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.9.0...v0.10.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* parse a field into its name with the field named on the error ([#64](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/64))
+
+### Features
+
+* parse a field into its name with the field named on the error ([#64](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/64)) ([c16a26d](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/c16a26d17781a5330e43eea27b47938142458849))
+
 ## [0.9.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.8.0...v0.9.0) (2026-10-15)
 
 

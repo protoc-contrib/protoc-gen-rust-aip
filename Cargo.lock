@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aip-fixture"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aip-rs 0.10.1",
  "anyhow",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "protoc-gen-rust-aip"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aip-rs 0.7.0",
  "anyhow",
