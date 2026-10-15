@@ -764,13 +764,11 @@ fn emit_message_accessors(
         binding.name_field, resource.resource_type, binding.name_field,
     ));
     let at = field_at(&binding.name_field, binding.name_field_number);
-    let large_err = allow_large_err();
     impl_for(
         &message,
         views,
         &quote! {
             #parse_doc
-            #large_err
             pub fn parse_name(
                 &self,
             ) -> ::core::result::Result<#name_type, ::aip::FieldError<#error>> {
@@ -778,7 +776,6 @@ fn emit_message_accessors(
             }
 
             #parse_full_doc
-            #large_err
             pub fn parse_full_name(
                 &self,
             ) -> ::core::result::Result<#name_type, ::aip::FieldError<#error>> {
@@ -822,13 +819,11 @@ fn emit_reference(
         reference.field_name, resource.resource_type, reference.field_name,
     ));
     let at = field_at(&reference.field_name, reference.field_number);
-    let large_err = allow_large_err();
     impl_for(
         &message,
         views,
         &quote! {
             #method_doc
-            #large_err
             pub fn #method(
                 &self,
             ) -> ::core::result::Result<#name_path, ::aip::FieldError<#error>> {
@@ -836,18 +831,6 @@ fn emit_reference(
             }
         },
     )
-}
-
-/// The allowance for an accessor returning an `aip::FieldError`: the path of the
-/// field travels beside the failure, which is the `ParseError` a name's parse
-/// returned before, so the whole is larger than clippy's limit for an `Err`.
-fn allow_large_err() -> TokenStream {
-    quote! {
-        #[allow(
-            clippy::result_large_err,
-            reason = "the field's path is the point of the error, and the failure it wraps is the one a name's parse already returned"
-        )]
-    }
 }
 
 /// The `aip::FieldPath` to the `string` field `name`, numbered `number`: where a
@@ -1055,7 +1038,6 @@ fn emit_create_id(
     let name_type = format_ident!("{}", resource.name_type());
     let field_name = Literal::string(&field.name);
     let at = field_at(&field.name, u32::try_from(field.number).unwrap_or_default());
-    let large_err = allow_large_err();
 
     let method_doc = doc(&format!(
         "The ID the caller proposed for the `{}` being created, or `None` when \
@@ -1091,7 +1073,6 @@ fn emit_create_id(
         views,
         &quote! {
             #method_doc
-            #large_err
             pub fn #method(
                 &self,
             ) -> ::core::result::Result<
