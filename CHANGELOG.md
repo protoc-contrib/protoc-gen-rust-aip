@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.8.0...v0.9.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* generated code needs aip-rs with Procedure::new and Procedure::clearing (0.9.0), and every request but a well-known type, streaming ones included, must implement protovalidate-buffa's Validate.
+
+### Features
+
+* name every procedure Procedure::new, a well-known request Procedure::clearing ([#61](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/61)) ([1655a05](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/1655a0577a2e2f177eb87b26347e1f5a2bdd0b43))
+
 ## [0.8.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.7.0...v0.8.0) (2026-10-15)
 
 
