@@ -39,7 +39,13 @@
           src = pkgs.lib.cleanSource ./.;
           doCheck = false;
 
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            # The fixture's aip-rs is a git dependency (its releases are git
+            # tags); Cargo.lock pins its revision, so it is fetched as it is
+            # rather than by a hash kept here.
+            allowBuiltinFetchGit = true;
+          };
 
           # Only the plugin. The other workspace member is the fixture, which
           # exists to regenerate and type-check the test schema and has no place

@@ -1,9 +1,9 @@
 //! Exercises the `aip::ResourceWrites` impls and the `PROCEDURES` table
 //! emitted for aip-rs's `FieldBehaviorInterceptor`, through
-//! `aip::connect::prepare` -- what the interceptor does to a unary request --
+//! `aip::connect::validate` -- what the interceptor does to each request message --
 //! and through the table's own payload steps.
 
-use aip::connect::prepare;
+use aip::connect::validate;
 use aip_fixture::aip_gen::example::v1::PROCEDURES;
 use aip_fixture::proto::example::v1::{
     BatchCreateOrdersRequest, CreateLineRequest, CreateOrderRequest, Destination, Line, Order,
@@ -65,6 +65,24 @@ fn violations(error: &ConnectError) -> Vec<String> {
         .collect()
 }
 
+/// `request` as `validate` -- what the interceptor applies to each message --
+/// leaves it for the handler, or the error it answers with.
+fn prepared<M>(request: M) -> Result<M, ConnectError>
+where
+    M: buffa::Message
+        + connectrpc::JsonSerialize
+        + connectrpc::JsonDeserialize
+        + Clone
+        + aip::FieldBehavior
+        + aip::connect::ResourceWrites
+        + protovalidate_buffa::Validate
+        + 'static,
+{
+    let mut payload = Payload::from_message(request, CodecFormat::Proto);
+    validate::<M>(&mut payload)?;
+    Ok(payload.message::<M>()?.clone())
+}
+
 #[test]
 fn procedures_name_every_method_of_the_package() {
     let paths: Vec<&str> = PROCEDURES.iter().map(|procedure| procedure.path).collect();
@@ -89,11 +107,11 @@ fn procedures_name_every_method_of_the_package() {
 
 #[test]
 fn a_create_without_an_id_gets_a_minted_uuidv7_and_no_name() {
-    let mut request = CreateOrderRequest {
+    let request = CreateOrderRequest {
         order: MessageField::some(order()),
         ..Default::default()
     };
-    prepare(&mut request).expect("a complete order");
+    let request = prepared(request).expect("a complete order");
     let id = uuid::Uuid::parse_str(&request.order_id).expect("a minted UUID");
     assert_eq!(id.get_version_num(), 7);
     assert!(request.order.name.is_empty(), "the name is the handler's");
@@ -101,18 +119,18 @@ fn a_create_without_an_id_gets_a_minted_uuidv7_and_no_name() {
 
 #[test]
 fn a_create_keeps_the_id_the_client_sent() {
-    let mut request = CreateOrderRequest {
+    let request = CreateOrderRequest {
         order_id: "sent".to_owned(),
         order: MessageField::some(order()),
         ..Default::default()
     };
-    prepare(&mut request).expect("a complete order");
+    let request = prepared(request).expect("a complete order");
     assert_eq!(request.order_id, "sent");
 }
 
 #[test]
 fn a_nested_create_gets_an_id_and_its_output_only_parent_cleared() {
-    let mut request = CreateLineRequest {
+    let request = CreateLineRequest {
         parent: "orders/o1".to_owned(),
         line: MessageField::some(Line {
             parent: "client-sent, OUTPUT_ONLY".to_owned(),
@@ -121,7 +139,7 @@ fn a_nested_create_gets_an_id_and_its_output_only_parent_cleared() {
         }),
         ..Default::default()
     };
-    prepare(&mut request).expect("a complete line");
+    let request = prepared(request).expect("a complete line");
     assert_ne!(request.line_id, "");
     assert_eq!(request.parent, "orders/o1");
     assert!(
@@ -133,30 +151,30 @@ fn a_nested_create_gets_an_id_and_its_output_only_parent_cleared() {
 
 #[test]
 fn a_create_reports_protovalidate_and_required_violations_together() {
-    let mut request = CreateLineRequest {
+    let request = CreateLineRequest {
         line: MessageField::some(Line::default()),
         ..Default::default()
     };
-    let error = prepare(&mut request).expect_err("no parent, no sku");
+    let error = prepared(request).expect_err("no parent, no sku");
     assert_eq!(violations(&error), ["parent required", "line.sku required"]);
 }
 
 #[test]
 fn an_update_implies_an_omitted_mask_from_what_it_sets() {
-    let mut request = UpdateOrderRequest {
+    let request = UpdateOrderRequest {
         order: MessageField::some(Order {
             title: "Lamp".to_owned(),
             ..Default::default()
         }),
         ..Default::default()
     };
-    prepare(&mut request).expect("only the title is written, and it is set");
+    let request = prepared(request).expect("only the title is written, and it is set");
     assert_eq!(request.update_mask.paths, ["title"]);
 }
 
 #[test]
 fn an_update_refuses_clearing_a_required_field_its_mask_names() {
-    let mut request = UpdateOrderRequest {
+    let request = UpdateOrderRequest {
         order: MessageField::some(Order::default()),
         update_mask: MessageField::some(FieldMask {
             paths: vec!["title".to_owned()],
@@ -164,13 +182,13 @@ fn an_update_refuses_clearing_a_required_field_its_mask_names() {
         }),
         ..Default::default()
     };
-    let error = prepare(&mut request).expect_err("the mask names an empty title");
+    let error = prepared(request).expect_err("the mask names an empty title");
     assert_eq!(violations(&error), ["order.title required"]);
 }
 
 #[test]
 fn a_batch_fills_in_each_entry_and_reports_each_under_its_index() {
-    let mut request = BatchCreateOrdersRequest {
+    let batch = |title: &str| BatchCreateOrdersRequest {
         requests: vec![
             CreateOrderRequest {
                 order: MessageField::some(order()),
@@ -178,7 +196,7 @@ fn a_batch_fills_in_each_entry_and_reports_each_under_its_index() {
             },
             CreateOrderRequest {
                 order: MessageField::some(Order {
-                    title: String::new(),
+                    title: title.to_owned(),
                     ..order()
                 }),
                 ..Default::default()
@@ -186,19 +204,22 @@ fn a_batch_fills_in_each_entry_and_reports_each_under_its_index() {
         ],
         ..Default::default()
     };
-    let error = prepare(&mut request).expect_err("the second order has no title");
-    assert_eq!(violations(&error), ["requests[].order.title required"]);
+
+    let request = prepared(batch("Desk")).expect("every order has a title");
     assert!(
         request
             .requests
             .iter()
             .all(|entry| !entry.order_id.is_empty())
     );
+
+    let error = prepared(batch("")).expect_err("the second order has no title");
+    assert_eq!(violations(&error), ["requests[].order.title required"]);
 }
 
 #[test]
 fn a_required_violation_carries_field_numbers_and_types() {
-    let mut request = BatchCreateOrdersRequest {
+    let request = BatchCreateOrdersRequest {
         requests: vec![
             CreateOrderRequest {
                 order: MessageField::some(order()),
@@ -214,7 +235,7 @@ fn a_required_violation_carries_field_numbers_and_types() {
         ],
         ..Default::default()
     };
-    let error = prepare(&mut request).expect_err("the second order has no title");
+    let error = prepared(request).expect_err("the second order has no title");
     let violation = error
         .details
         .iter()

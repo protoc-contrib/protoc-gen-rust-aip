@@ -97,8 +97,9 @@ pub struct Options {
     /// `PROCEDURES` table per package naming each method's message types.
     ///
     /// On by default, matching aip-rs's default `connect` feature, which the
-    /// output then needs. A unary method's request must also implement
-    /// protovalidate-buffa's `Validate`, which its own plugin generates. Off
+    /// output then needs. Every request but a well-known type must also
+    /// implement protovalidate-buffa's `Validate`, which its own plugin
+    /// generates. Off
     /// for a consumer that does not serve Connect, or builds aip-rs without
     /// default features.
     pub connect: bool,

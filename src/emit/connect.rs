@@ -93,9 +93,10 @@ pub fn emit_file(
 /// generated files' services declare, in declaration order, or `None` when
 /// they declare none.
 ///
-/// A unary method is `Procedure::unary`, unless its request is a well-known
-/// type: that has nothing to fill in or validate, and no `Validate` impl, so
-/// it is `Procedure::streaming`, which clears only.
+/// A method of any cardinality is `Procedure::new`, the full policy on each
+/// message, unless its request is a well-known type: that has nothing to fill
+/// in or validate, and no `Validate` impl, so it is `Procedure::clear`,
+/// which clears only.
 ///
 /// # Errors
 ///
@@ -121,10 +122,10 @@ pub fn procedures(
         let path = Literal::string(&method.procedure());
         let input = message_type(package, index, generated, options, method, &method.input)?;
         let output = message_type(package, index, generated, options, method, &method.output)?;
-        let constructor = if method.streaming || well_known(&method.input).is_some() {
-            quote! { streaming }
+        let constructor = if well_known(&method.input).is_some() {
+            quote! { clear }
         } else {
-            quote! { unary }
+            quote! { new }
         };
         entries.push(quote! {
             ::aip::Procedure::#constructor::<#input, #output>(#path)
@@ -133,7 +134,8 @@ pub fn procedures(
     let doc = super::doc(&format!(
         "Every procedure the services of `{package}` declare, with the message\n\
          types `aip::FieldBehaviorInterceptor` decodes for it: the full AIP\n\
-         field-behavior policy on a unary method, clearing on a streaming one.\n\
+         field-behavior policy on each message, unary or streamed, and clearing\n\
+         only for a request that is a well-known type.\n\
          \n\
          ```ignore\n\
          service.with_interceptor(aip::FieldBehaviorInterceptor::new(PROCEDURES));\n\
@@ -583,10 +585,10 @@ mod tests {
             .expect("the package declares a service")
             .to_string();
         assert!(table.contains(
-            "Procedure :: unary :: < CreateBookRequest , crate :: proto :: dep :: Book > (\"/api.Books/CreateBook\")"
+            "Procedure :: new :: < CreateBookRequest , crate :: proto :: dep :: Book > (\"/api.Books/CreateBook\")"
         ));
         assert!(table.contains(
-            "Procedure :: unary :: < GetBookRequest , :: buffa_types :: google :: protobuf :: Empty > (\"/api.Books/GetBook\")"
+            "Procedure :: new :: < GetBookRequest , :: buffa_types :: google :: protobuf :: Empty > (\"/api.Books/GetBook\")"
         ));
     }
 

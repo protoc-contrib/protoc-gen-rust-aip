@@ -23,7 +23,8 @@ pub mod aip_gen {
 }
 
 /// protovalidate-buffa's `Validate`, which the `PROCEDURES` table needs on
-/// every unary request and a consumer generates with
+/// every request but a well-known type, unary or streamed, and a consumer
+/// generates with
 /// protoc-gen-protovalidate-buffa. Written by hand here: every request passes,
 /// except a `CreateLineRequest` without a `parent`, so the tests can see
 /// protovalidate's violations merged with the `REQUIRED` ones the interceptor
@@ -34,7 +35,7 @@ mod validate {
     use crate::proto::example::v1::{
         BatchCreateOrdersRequest, BatchUpdateOrdersRequest, BrowseRequest, CreateLineRequest,
         CreateOrderRequest, DeleteOrderRequest, ListCoversRequest, ListGadgetsRequest,
-        ListVolumesRequest, UpdateOrderRequest,
+        ListVolumesRequest, UpdateOrderRequest, WatchOrdersRequest,
     };
 
     macro_rules! valid {
@@ -57,6 +58,7 @@ mod validate {
         ListGadgetsRequest,
         ListVolumesRequest,
         UpdateOrderRequest,
+        WatchOrdersRequest,
     );
 
     impl Validate for CreateLineRequest {
