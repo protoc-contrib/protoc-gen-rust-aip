@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.10.0...v0.11.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* parse_filter names the filter on its error, as Go's ParseFilter does ([#67](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/67))
+
+### Features
+
+* parse_filter names the filter on its error, as Go's ParseFilter does ([#67](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/67)) ([ba4b92d](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/ba4b92d1aa1ee89298920828388be48b8ff840a0))
+
 ## [0.10.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.9.0...v0.10.0) (2026-10-15)
 
 
