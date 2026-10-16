@@ -74,16 +74,30 @@ fn an_empty_filter_is_absent_rather_than_an_error() {
 fn rejects_the_aip_160_grammar_as_a_syntax_error() {
     // AIP-160 spells equality `=` and conjunction `AND`. Filters here are
     // plain CEL, so the old grammar fails loudly instead of being misread.
-    assert!(
-        request(r#"title = "demo" AND published"#)
-            .parse_filter()
-            .is_err()
-    );
+    let error = request(r#"title = "demo" AND published"#)
+        .parse_filter()
+        .expect_err("the old grammar is a syntax error");
+    // The error names the field it parsed, as the other accessors do.
+    assert_eq!(error.path().to_string(), "filter");
 }
 
 #[test]
 fn rejects_optional_syntax() {
-    assert!(request("cover.?url").parse_filter().is_err());
+    let error = request("cover.?url")
+        .parse_filter()
+        .expect_err("optional syntax is a syntax error");
+    assert_eq!(error.path().to_string(), "filter");
+}
+
+#[test]
+fn names_the_filter_on_the_view_too() {
+    let owned = request("cover.?url");
+    let view = ListVolumesRequestOwnedView::from_owned(&owned).unwrap();
+    let error = view
+        .view()
+        .parse_filter()
+        .expect_err("optional syntax is a syntax error");
+    assert_eq!(error.path().to_string(), "filter");
 }
 
 #[test]

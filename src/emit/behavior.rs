@@ -590,7 +590,7 @@ fn validate_statements(
 
 /// The `aip::FieldPath` to `field`, with its name, number and type, as a
 /// protovalidate violation path carries them.
-fn field_path(field: &Field) -> TokenStream {
+pub(super) fn field_path(field: &Field) -> TokenStream {
     let name = Literal::string(&field.name);
     let number = Literal::u32_unsuffixed(u32::try_from(field.number).unwrap_or_default());
     let ty = format_ident!("{}", field.field_type);
