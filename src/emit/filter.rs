@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
+use super::behavior::field_path;
 use crate::emit::{doc, impl_for, short_name};
 use crate::idents::snake_case;
 use crate::messages::{Field, Index, Kind, Message};
@@ -176,11 +177,12 @@ fn emit_request(list: &ListRequest, index: &Index, views: bool) -> Option<TokenS
         .parse()
         .expect("a message path built from proto identifiers is a valid Rust path");
     let env = Ident::new(&env_name(&request.fqn, &request.package), Span::call_site());
+    // `requests` holds only requests with a `filter`.
+    let filter_field = request.fields.iter().find(|field| field.name == "filter")?;
     // An editions or proto2 `filter` is an `Option<String>`; unset is blank.
-    let optional = request
-        .fields
-        .iter()
-        .any(|field| field.name == "filter" && field.optional);
+    let optional = filter_field.optional;
+    // Where a `FieldError` from compiling it says the failure is.
+    let at = field_path(filter_field);
     let filter = if optional {
         quote! { self.filter.as_deref().unwrap_or_default() }
     } else {
@@ -221,7 +223,8 @@ fn emit_request(list: &ListRequest, index: &Index, views: bool) -> Option<TokenS
          `AND`/`OR`/`NOT` and `:` are rejected as syntax errors rather than \
          silently misread. Nothing beyond syntax is checked — see [`{env}`].\n\n\
          # Errors\n\n\
-         If the expression is not valid CEL.",
+         If the expression is not valid CEL: an [`aip::FieldError`] naming \
+         `filter`, whose source is the compile failure.",
     ));
 
     let parse_filter = impl_for(
@@ -231,13 +234,17 @@ fn emit_request(list: &ListRequest, index: &Index, views: bool) -> Option<TokenS
             #method_doc
             pub fn parse_filter(
                 &self,
-            ) -> ::core::result::Result<::core::option::Option<::cel::Program>, ::cel::ParseErrors>
-            {
+            ) -> ::core::result::Result<
+                ::core::option::Option<::cel::Program>,
+                ::aip::FieldError<::cel::ParseErrors>,
+            > {
                 let filter: &str = #filter;
                 if filter.trim().is_empty() {
                     return ::core::result::Result::Ok(::core::option::Option::None);
                 }
-                #env.compile(filter).map(::core::option::Option::Some)
+                #env.compile(filter)
+                    .map(::core::option::Option::Some)
+                    .map_err(|error| ::aip::FieldError::new(#at, error))
             }
         },
     );

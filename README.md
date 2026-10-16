@@ -74,7 +74,7 @@ Go's `FilterEnv`:
 pub static LIST_VOLUMES_FILTER_ENV: LazyLock<Arc<cel::Env>>;
 
 impl ListVolumesRequest {
-    pub fn parse_filter(&self) -> Result<Option<cel::Program>, cel::ParseErrors>;
+    pub fn parse_filter(&self) -> Result<Option<cel::Program>, aip::FieldError<cel::ParseErrors>>;
 }
 ```
 
@@ -89,6 +89,9 @@ repeated fields and maps are left out.
 `parse_filter` returns `None` for a blank filter and otherwise compiles it.
 The expression is plain CEL, not AIP-160's CEL-*like* grammar, so
 `title = "x" AND published` is a syntax error rather than something misread.
+The failure is an `aip::FieldError` naming `filter` (see [Which field
+failed](#which-field-failed)), as Go's `ParseFilter` returns an
+`*aip.FieldError`.
 
 **It checks syntax, and nothing else.** cel-rust has no type checker and no
 variable declarations, so the registered fields constrain an
@@ -465,8 +468,8 @@ async fn create_item(&self, ctx: RequestContext, request: ServiceRequest<'_, Cre
 ### Which field failed
 
 Every accessor that parses a message's own field -- `parse_name`,
-`parse_full_name`, `parse_<reference>` and `parse_<resource>_id` -- returns the
-failure inside an `aip::FieldError`, which carries the field as an
+`parse_full_name`, `parse_<reference>`, `parse_<resource>_id` and
+`parse_filter` -- returns the failure inside an `aip::FieldError`, which carries the field as an
 `aip::FieldPath` with its number and type filled in, as a protovalidate
 violation names a field:
 
