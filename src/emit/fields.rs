@@ -1,4 +1,4 @@
-//! Emits `aip::Fields` for every message declared in a file: a field's name, or
+//! Emits `aip::FieldPaths` for every message declared in a file: a field's name, or
 //! names joined by `.` through singular message fields, resolved to its
 //! `aip::FieldPath` with the field's number and type from the schema. It is what
 //! lets a handler name a request field it wrote out --
@@ -6,7 +6,7 @@
 //! and type out of the proto, and have the name checked.
 //!
 //! A message gets an impl, empty of fields or not, as it does an
-//! `aip::FieldBehavior`, so a consumer's code generic over `T: aip::Fields`
+//! `aip::FieldBehavior`, so a consumer's code generic over `T: aip::FieldPaths`
 //! needs none of its own.
 //!
 //! A field that holds a message generated in the same package resolves the rest
@@ -23,7 +23,7 @@ use quote::quote;
 use crate::emit::behavior::field_path;
 use crate::messages::{Field, Index, Kind, Message};
 
-/// The `aip::Fields` impl of each message declared in `file`, in declaration
+/// The `aip::FieldPaths` impl of each message declared in `file`, in declaration
 /// order.
 #[must_use]
 pub fn emit_file(file: &str, index: &Index, generated: &BTreeSet<String>) -> TokenStream {
@@ -41,7 +41,7 @@ fn emit_message(message: &Message, index: &Index, generated: &BTreeSet<String>) 
 
     if message.fields.is_empty() {
         return quote! {
-            impl ::aip::Fields for #path {
+            impl ::aip::FieldPaths for #path {
                 fn field_path(_name: &str) -> ::core::option::Option<::aip::FieldPath> {
                     ::core::option::Option::None
                 }
@@ -54,7 +54,7 @@ fn emit_message(message: &Message, index: &Index, generated: &BTreeSet<String>) 
         .iter()
         .map(|field| arm(message, field, index, generated));
     quote! {
-        impl ::aip::Fields for #path {
+        impl ::aip::FieldPaths for #path {
             #[allow(
                 clippy::too_many_lines,
                 reason = "one arm per field, spelled out at generation time"
@@ -87,7 +87,18 @@ fn arm(
     let name = Literal::string(&field.name);
     let path = field_path(field);
     if let Some(target) = beneath(message, field, index, generated) {
-        quote! { #name => #path.beneath::<#target>(rest), }
+        quote! {
+            #name => {
+                let path = #path;
+                match rest {
+                    ::core::option::Option::None => ::core::option::Option::Some(path),
+                    ::core::option::Option::Some(rest) => {
+                        <#target as ::aip::FieldPaths>::field_path(rest)
+                            .map(|beneath| path.join(beneath))
+                    }
+                }
+            }
+        }
     } else {
         quote! { #name => rest.is_none().then(|| #path), }
     }
@@ -95,7 +106,7 @@ fn arm(
 
 /// The path of the message `field` holds, when a dotted name can walk into it:
 /// a singular message field whose message is declared in this run and this
-/// package, so its `Fields` impl exists and is nameable here.
+/// package, so its `FieldPaths` impl exists and is nameable here.
 fn beneath(
     message: &Message,
     field: &Field,

@@ -1,4 +1,4 @@
-//! Exercises the generated `aip::Fields`: a field's name, or names joined by `.`
+//! Exercises the generated `aip::FieldPaths`: a field's name, or names joined by `.`
 //! through singular message fields, resolved to its `aip::FieldPath` with the
 //! number and type from the schema, and a name that is not a field refused.
 
@@ -77,7 +77,7 @@ fn a_oneof_member_is_a_field_of_the_message() {
 
 #[test]
 fn a_name_through_a_field_that_cannot_be_walked_is_not_a_path() {
-    use aip::Fields as _;
+    use aip::FieldPaths as _;
     // Neither a repeated field nor a map is walked into, a scalar holds no
     // message, and a well-known type is not one this plugin generated.
     assert_eq!(Shipment::field_path("parcels.label"), None);
@@ -88,7 +88,7 @@ fn a_name_through_a_field_that_cannot_be_walked_is_not_a_path() {
 
 #[test]
 fn a_name_that_is_not_a_field_is_not_a_path() {
-    use aip::Fields as _;
+    use aip::FieldPaths as _;
     assert_eq!(Shipment::field_path("nope"), None);
     assert_eq!(Shipment::field_path("carrier.nope"), None);
     assert_eq!(Shipment::field_path(""), None);
