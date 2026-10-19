@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.11.0...v0.12.0) (2026-10-19)
+
+
+### Features
+
+* implement aip::Fields for every message, so a field is named by its name ([#72](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/72)) ([d6997ef](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/d6997ef277a897c9e859b134c751d8d843b3f1e5))
+
 ## [0.11.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.10.0...v0.11.0) (2026-10-16)
 
 
