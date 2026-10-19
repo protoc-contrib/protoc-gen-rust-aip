@@ -10,6 +10,7 @@
 pub mod behavior;
 pub mod connect;
 pub mod field_mask;
+pub mod fields;
 pub mod filter;
 pub mod resource;
 
@@ -166,6 +167,7 @@ pub fn render(
             behavior::emit_file(name, index, &clear, &validate, &generated),
         );
         let resource_impls = field_mask::emit_file(name, index, registry);
+        let fields = fields::emit_file(name, index, &generated);
         let filters = filter::emit_file(name, index, &lists, options.views);
         let interceptor = if options.connect {
             connect::emit_file(name, index, registry, &generated)?
@@ -176,15 +178,15 @@ pub fn render(
             && creates.is_empty()
             && behaviors.is_empty()
             && resource_impls.is_empty()
+            && fields.is_empty()
             && filters.is_empty()
             && interceptor.is_empty()
         {
             continue;
         }
-        by_package
-            .entry(package)
-            .or_default()
-            .push(quote! { #resources #creates #behaviors #resource_impls #filters #interceptor });
+        by_package.entry(package).or_default().push(
+            quote! { #resources #creates #behaviors #resource_impls #fields #filters #interceptor },
+        );
     }
 
     if options.connect {
