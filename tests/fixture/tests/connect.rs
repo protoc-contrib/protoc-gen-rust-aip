@@ -1,9 +1,9 @@
 //! Exercises the `aip::ResourceWrites` impls and the `PROCEDURES` table
 //! emitted for aip-rs's `FieldBehaviorInterceptor`, through
-//! `aip::connect::validate` -- what the interceptor does to each request message --
+//! `aip::request::behavior::validate` -- what the interceptor does to each request message --
 //! and through the table's own payload steps.
 
-use aip::connect::validate;
+use aip::request::behavior::validate;
 use aip_fixture::aip_gen::example::v1::PROCEDURES;
 use aip_fixture::proto::example::v1::{
     BatchCreateOrdersRequest, CreateLineRequest, CreateOrderRequest, Destination, Line, Order,
@@ -74,7 +74,7 @@ where
         + connectrpc::JsonDeserialize
         + Clone
         + aip::FieldBehavior
-        + aip::connect::ResourceWrites
+        + aip::ResourceWrites
         + protovalidate_buffa::Validate
         + 'static,
 {

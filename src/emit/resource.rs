@@ -323,7 +323,7 @@ fn emit_pattern_struct(
                 Format::String => format!("The `{{{}}}` segment.", segment.name),
                 Format::Uuid => format!(
                     "The `{{{}}}` segment, a UUID by `google.api.field_info` on \
-                     the create request that mints it.",
+                     the create request that mints it, or the AIP-159 wildcard.",
                     segment.name,
                 ),
             });
@@ -351,23 +351,29 @@ fn emit_pattern_struct(
                 Format::Uuid => {
                     let variable = Literal::string(&segment.name);
                     quote! {
-                        #field: match <::uuid::Uuid as ::core::str::FromStr>::from_str(ids[#index]) {
-                            ::core::result::Result::Ok(value)
-                                if &*value.hyphenated().encode_lower(&mut ::uuid::Uuid::encode_buffer())
-                                    != ids[#index] =>
-                            {
-                                return ::core::result::Result::Err(Self::compiled().invalid_value(
-                                    name,
-                                    #variable,
-                                    ::std::format!("{:?} is not a canonical lowercase UUID", ids[#index]),
-                                ));
-                            }
-                            ::core::result::Result::Ok(value) => value,
-                            ::core::result::Result::Err(error) => {
-                                return ::core::result::Result::Err(
-                                    Self::compiled().invalid_value(name, #variable, error),
-                                );
-                            }
+                        #field: if ids[#index] == ::aip::resource::WILDCARD {
+                            ::aip::Segment::Wildcard
+                        } else {
+                            ::aip::Segment::Id(
+                                match <::uuid::Uuid as ::core::str::FromStr>::from_str(ids[#index]) {
+                                    ::core::result::Result::Ok(value)
+                                        if &*value.hyphenated().encode_lower(&mut ::uuid::Uuid::encode_buffer())
+                                            != ids[#index] =>
+                                    {
+                                        return ::core::result::Result::Err(Self::compiled().invalid_value(
+                                            name,
+                                            #variable,
+                                            ::std::format!("{:?} is not a canonical lowercase UUID", ids[#index]),
+                                        ));
+                                    }
+                                    ::core::result::Result::Ok(value) => value,
+                                    ::core::result::Result::Err(error) => {
+                                        return ::core::result::Result::Err(
+                                            Self::compiled().invalid_value(name, #variable, error),
+                                        );
+                                    }
+                                },
+                            )
                         }
                     }
                 }
@@ -403,30 +409,64 @@ fn emit_pattern_struct(
                     ::aip::resource::validate_segment(#variable, &self.#field)?;
                 },
                 // A UUID cannot be empty or hold a `/`; the nil UUID is the
-                // degenerate value worth rejecting in its place.
+                // degenerate value worth rejecting in its place, and the
+                // wildcard is a name to read across, not a resource to write.
                 Format::Uuid => quote! {
-                    if ::uuid::Uuid::is_nil(&self.#field) {
-                        return ::core::result::Result::Err(
-                            ::aip::resource::InvalidResourceIdError::empty(#variable),
-                        );
+                    match self.#field {
+                        ::aip::Segment::Wildcard => {
+                            return ::core::result::Result::Err(
+                                ::aip::resource::InvalidResourceIdError::wildcard(#variable),
+                            );
+                        }
+                        ::aip::Segment::Id(id) if ::uuid::Uuid::is_nil(&id) => {
+                            return ::core::result::Result::Err(
+                                ::aip::resource::InvalidResourceIdError::empty(#variable),
+                            );
+                        }
+                        ::aip::Segment::Id(_) => {}
                     }
                 },
             }
         })
         .collect();
 
-    // Only a string segment can be the wildcard -- no UUID parses from `-`.
-    let wildcards: Vec<TokenStream> = segments
+    // A segment is the wildcard if it reads `-`: a string one is compared, a
+    // typed one says so itself.
+    let wildcard_of = |(segment, field): (&&Segment, &proc_macro2::Ident)| match segment.format {
+        Format::String => quote! { self.#field == ::aip::resource::WILDCARD },
+        Format::Uuid => quote! { self.#field.is_wildcard() },
+    };
+    let wildcards: Vec<TokenStream> = segments.iter().zip(&fields).map(wildcard_of).collect();
+    let (any_wildcard, every_wildcard) = if wildcards.is_empty() {
+        (quote! { false }, quote! { false })
+    } else {
+        (quote! { #( #wildcards )||* }, quote! { #( #wildcards )&&* })
+    };
+
+    // The id of a typed segment, which the wildcard is none of: aip-go's
+    // `ParseItemID`, named for the field the id is in.
+    let id_accessors: Vec<TokenStream> = segments
         .iter()
         .zip(&fields)
-        .filter(|(segment, _)| segment.format == Format::String)
-        .map(|(_, field)| quote! { self.#field == ::aip::resource::WILDCARD })
+        .filter(|(segment, _)| segment.format == Format::Uuid)
+        .map(|(segment, field)| {
+            let variable = Literal::string(&segment.name);
+            let accessor_doc = doc(&format!(
+                "The `{{{}}}` id. Fails for the wildcard, which is no id.",
+                segment.name,
+            ));
+            quote! {
+                #accessor_doc
+                ///
+                /// # Errors
+                ///
+                /// [`SegmentError`](::aip::resource::SegmentError) if the segment is the wildcard.
+                pub fn #field(&self) -> ::core::result::Result<::uuid::Uuid, ::aip::resource::SegmentError> {
+                    self.#field.into_id(#variable)
+                }
+            }
+        })
         .collect();
-    let wildcard = if wildcards.is_empty() {
-        quote! { false }
-    } else {
-        quote! { #( #wildcards )||* }
-    };
 
     let parent = emit_parent(resource, name_type, pattern, package, registry);
     let parent_method = parent.as_ref().map(|p| p.method.clone());
@@ -539,6 +579,14 @@ fn emit_pattern_struct(
             }
 
             #parent_method
+
+            /// Whether every variable segment is the AIP-159 wildcard.
+            #[must_use]
+            pub fn is_wildcard(&self) -> bool {
+                #every_wildcard
+            }
+
+            #( #id_accessors )*
         }
 
         #display
@@ -568,7 +616,7 @@ fn emit_pattern_struct(
             }
 
             fn contains_wildcard(&self) -> bool {
-                #wildcard
+                #any_wildcard
             }
         }
 
@@ -700,7 +748,7 @@ fn emit_parent(
         .zip(&own_fields)
         .map(|(segment, field)| match segment.format {
             Format::String => quote! { #field: ::core::convert::Into::into(#field) },
-            Format::Uuid => quote! { #field },
+            Format::Uuid => quote! { #field: ::aip::Segment::Id(#field) },
         })
         .collect();
 
@@ -918,11 +966,12 @@ fn type_path(from_package: &str, resource: &Resource, type_name: &str) -> TokenS
 ///
 /// A `Uuid` costs the consumer a `uuid` dependency, but only a schema that
 /// annotates an ID as UUID4 pays it -- nothing else in the output names the
-/// crate.
+/// crate. A typed segment is a [`Segment`](::aip::Segment) of it, so it can be
+/// the AIP-159 wildcard as aip-go's string segments can.
 fn segment_type(format: Format) -> TokenStream {
     match format {
         Format::String => quote! { ::std::string::String },
-        Format::Uuid => quote! { ::uuid::Uuid },
+        Format::Uuid => quote! { ::aip::Segment<::uuid::Uuid> },
     }
 }
 

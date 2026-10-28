@@ -174,11 +174,19 @@ fn validate_rejects_an_id_carrying_the_separator() {
 const ID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 
 #[test]
-fn an_annotated_id_becomes_a_uuid_field() {
+fn an_annotated_id_becomes_a_uuid_segment() {
     let name = ex::CollectionName::parse(&format!("collections/{ID}")).unwrap();
-    // The field is a Uuid, not a String -- this would not compile otherwise.
-    let id: uuid::Uuid = name.collection_id;
-    assert_eq!(id, uuid::Uuid::parse_str(ID).unwrap());
+    // The field is a typed segment, a Uuid or the wildcard, not a String --
+    // this would not compile otherwise.
+    let segment: aip::Segment<uuid::Uuid> = name.collection_id;
+    assert_eq!(
+        segment,
+        aip::Segment::Id(uuid::Uuid::parse_str(ID).unwrap())
+    );
+    assert_eq!(
+        name.collection_id().unwrap(),
+        uuid::Uuid::parse_str(ID).unwrap()
+    );
     assert_eq!(name.to_string(), format!("collections/{ID}"));
 }
 
@@ -240,7 +248,7 @@ fn a_child_inherits_its_parents_segment_format() {
     let parent: ex::OrganizationName = item.parent();
     // Typed straight through, with no string in between.
     assert_eq!(parent.organization_id, item.organization_id);
-    assert_eq!(parent.item_name(item.item_id), item);
+    assert_eq!(parent.item_name(item.item_id().unwrap()), item);
 }
 
 #[test]
@@ -252,7 +260,7 @@ fn a_pattern_can_mix_a_typed_and_an_untyped_segment() {
     assert_eq!(note.parent().organization_id, note.organization_id);
     assert_eq!(
         ex::OrganizationName {
-            organization_id: uuid::Uuid::parse_str(ID).unwrap()
+            organization_id: aip::Segment::Id(uuid::Uuid::parse_str(ID).unwrap())
         }
         .note_name("n1"),
         note
@@ -260,21 +268,59 @@ fn a_pattern_can_mix_a_typed_and_an_untyped_segment() {
 }
 
 #[test]
-fn only_an_untyped_segment_can_hold_the_wildcard() {
-    // The string half can be the wildcard...
+fn a_segment_of_either_kind_can_hold_the_wildcard() {
+    // The string half...
     let note = ex::NoteName::parse(&format!("organizations/{ID}/notes/-")).unwrap();
     assert!(note.contains_wildcard());
-    // ...and the UUID half cannot, since "-" is not a UUID.
-    assert!(ex::NoteName::parse("organizations/-/notes/n1").is_err());
-    // A name with no string segment at all can never carry one.
+    // ...and the typed half, as aip-go's names hold it: it is the wildcard,
+    // not a Uuid.
+    let note = ex::NoteName::parse("organizations/-/notes/n1").unwrap();
+    assert!(note.contains_wildcard());
+    assert_eq!(note.organization_id, aip::Segment::Wildcard);
+    assert_eq!(note.to_string(), "organizations/-/notes/n1");
+    // A name with no wildcard in it has none.
     let item = ex::ItemName::parse(&format!("organizations/{ID}/items/{ID}")).unwrap();
     assert!(!item.contains_wildcard());
 }
 
 #[test]
+fn only_a_name_of_wildcards_alone_is_a_wildcard() {
+    let any = ex::ItemName::parse("organizations/-/items/-").unwrap();
+    assert!(any.is_wildcard() && any.contains_wildcard());
+
+    let some = ex::ItemName::parse(&format!("organizations/-/items/{ID}")).unwrap();
+    assert!(!some.is_wildcard() && some.contains_wildcard());
+    // The parent carries the wildcard with it.
+    assert!(some.parent().contains_wildcard());
+}
+
+#[test]
+fn the_wildcard_is_no_id() {
+    let item = ex::ItemName::parse(&format!("organizations/-/items/{ID}")).unwrap();
+
+    // The id that is there, and the error for the one that is not.
+    assert_eq!(item.item_id().unwrap(), uuid::Uuid::parse_str(ID).unwrap());
+    let error = item.organization_id().unwrap_err();
+    assert_eq!(error.segment(), "organization");
+    assert_eq!(error.to_string(), "organization: the wildcard is not an id");
+}
+
+#[test]
+fn a_name_with_the_wildcard_is_not_valid_to_write() {
+    let item = ex::ItemName::parse(&format!("organizations/-/items/{ID}")).unwrap();
+
+    let error = item.validate().unwrap_err();
+    assert_eq!(error.segment(), Some("organization"));
+    assert_eq!(
+        error.kind(),
+        &aip::resource::InvalidResourceIdErrorKind::Wildcard
+    );
+}
+
+#[test]
 fn the_nil_uuid_is_rejected_as_a_degenerate_id() {
     let name = ex::CollectionName {
-        collection_id: uuid::Uuid::nil(),
+        collection_id: aip::Segment::Id(uuid::Uuid::nil()),
     };
     let error = name.validate().unwrap_err();
     assert_eq!(error.segment(), Some("collection"));
