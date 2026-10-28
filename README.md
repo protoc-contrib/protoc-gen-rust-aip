@@ -385,11 +385,14 @@ message CreateItemRequest {
 }
 ```
 
-`ItemName.item_id` is then a `uuid::Uuid`, not a `String`, and the builder takes
-one:
+`ItemName.item_id` is then an `aip::Segment<uuid::Uuid>`, not a `String`: a
+`Uuid` or the AIP-159 wildcard `-`, as aip-go's string segments can be either.
+The id itself is `item_id()`, which fails for the wildcard, and the builder takes
+a `Uuid`:
 
 ```rust
 let item = organization.item_name(id);   // id: uuid::Uuid
+let id: uuid::Uuid = item.item_id()?;    // SegmentError for `-`; aip-go's ParseItemID
 ```
 
 Only a schema that annotates an ID needs the `uuid` crate — nothing else in the
@@ -402,8 +405,11 @@ is what makes `parent()` able to hand the value straight over instead of
 bridging through a string — and it is why a child and its parent can never
 disagree about a segment's type.
 
-A UUID segment can't hold the AIP-159 wildcard, since `-` is not a UUID;
-`contains_wildcard()` only ever consults the string segments. A conversion that
+A name is read with the wildcard in it -- `collections/-/items/{item}` -- and
+a handler asks it whether it has one, as aip-go's does: `contains_wildcard()`
+(any segment), `is_wildcard()` (every one), and `parent().contains_wildcard()`.
+`validate()` refuses a name with the wildcard in a typed segment, and the nil
+UUID: it is a name to read across, not a resource to write. A conversion that
 fails is reported as `ParseError`, the same error as any other name that does not
 match the pattern, rather than as a second error type at the call site.
 

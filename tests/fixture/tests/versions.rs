@@ -22,7 +22,10 @@ fn a_reference_binds_to_its_own_versions_resource() {
 fn one_versions_create_request_does_not_type_the_others_segment() {
     // v1's CreateCollectionRequest types {collection} as a UUID; v2 has none.
     let v1 = v1::CollectionName::parse(&format!("collections/{ID}")).unwrap();
-    assert_eq!(v1.collection_id, uuid::Uuid::parse_str(ID).unwrap());
+    assert_eq!(
+        v1.collection_id().unwrap(),
+        uuid::Uuid::parse_str(ID).unwrap()
+    );
     let v2 = v2::CollectionName::parse("collections/not-a-uuid").unwrap();
     assert_eq!(v2.collection_id, "not-a-uuid");
 }
