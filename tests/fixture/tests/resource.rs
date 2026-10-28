@@ -184,7 +184,7 @@ fn an_annotated_id_becomes_a_uuid_segment() {
         aip::Segment::Id(uuid::Uuid::parse_str(ID).unwrap())
     );
     assert_eq!(
-        name.collection_id().unwrap(),
+        name.try_collection_id().unwrap(),
         uuid::Uuid::parse_str(ID).unwrap()
     );
     assert_eq!(name.to_string(), format!("collections/{ID}"));
@@ -248,7 +248,7 @@ fn a_child_inherits_its_parents_segment_format() {
     let parent: ex::OrganizationName = item.parent();
     // Typed straight through, with no string in between.
     assert_eq!(parent.organization_id, item.organization_id);
-    assert_eq!(parent.item_name(item.item_id().unwrap()), item);
+    assert_eq!(parent.item_name(item.try_item_id().unwrap()), item);
 }
 
 #[test]
@@ -299,8 +299,11 @@ fn the_wildcard_is_no_id() {
     let item = ex::ItemName::parse(&format!("organizations/-/items/{ID}")).unwrap();
 
     // The id that is there, and the error for the one that is not.
-    assert_eq!(item.item_id().unwrap(), uuid::Uuid::parse_str(ID).unwrap());
-    let error = item.organization_id().unwrap_err();
+    assert_eq!(
+        item.try_item_id().unwrap(),
+        uuid::Uuid::parse_str(ID).unwrap()
+    );
+    let error = item.try_organization_id().unwrap_err();
     assert_eq!(error.segment(), "organization");
     assert_eq!(error.to_string(), "organization: the wildcard is not an id");
 }
