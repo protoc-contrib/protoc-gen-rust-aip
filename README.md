@@ -387,12 +387,12 @@ message CreateItemRequest {
 
 `ItemName.item_id` is then an `aip::Segment<uuid::Uuid>`, not a `String`: a
 `Uuid` or the AIP-159 wildcard `-`, as aip-go's string segments can be either.
-The id itself is `item_id()`, which fails for the wildcard, and the builder takes
+The id itself is `try_item_id()`, which fails for the wildcard, and the builder takes
 a `Uuid`:
 
 ```rust
 let item = organization.item_name(id);   // id: uuid::Uuid
-let id: uuid::Uuid = item.item_id()?;    // SegmentError for `-`; aip-go's ParseItemID
+let id: uuid::Uuid = item.try_item_id()?;    // SegmentError for `-`; aip-go's ParseItemID
 ```
 
 Only a schema that annotates an ID needs the `uuid` crate — nothing else in the

@@ -444,13 +444,15 @@ fn emit_pattern_struct(
     };
 
     // The id of a typed segment, which the wildcard is none of: aip-go's
-    // `ParseItemID`, named for the field the id is in.
+    // `ParseItemID`, named `try_` and for the field the id is in: `try_item_id`
+    // beside the `item_id` field.
     let id_accessors: Vec<TokenStream> = segments
         .iter()
         .zip(&fields)
         .filter(|(segment, _)| segment.format == Format::Uuid)
         .map(|(segment, field)| {
             let variable = Literal::string(&segment.name);
+            let accessor = format_ident!("try_{}", field);
             let accessor_doc = doc(&format!(
                 "The `{{{}}}` id. Fails for the wildcard, which is no id.",
                 segment.name,
@@ -461,7 +463,7 @@ fn emit_pattern_struct(
                 /// # Errors
                 ///
                 /// [`SegmentError`](::aip::resource::SegmentError) if the segment is the wildcard.
-                pub fn #field(&self) -> ::core::result::Result<::uuid::Uuid, ::aip::resource::SegmentError> {
+                pub fn #accessor(&self) -> ::core::result::Result<::uuid::Uuid, ::aip::resource::SegmentError> {
                     self.#field.into_id(#variable)
                 }
             }

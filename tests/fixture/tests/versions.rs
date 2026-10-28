@@ -23,7 +23,7 @@ fn one_versions_create_request_does_not_type_the_others_segment() {
     // v1's CreateCollectionRequest types {collection} as a UUID; v2 has none.
     let v1 = v1::CollectionName::parse(&format!("collections/{ID}")).unwrap();
     assert_eq!(
-        v1.collection_id().unwrap(),
+        v1.try_collection_id().unwrap(),
         uuid::Uuid::parse_str(ID).unwrap()
     );
     let v2 = v2::CollectionName::parse("collections/not-a-uuid").unwrap();
