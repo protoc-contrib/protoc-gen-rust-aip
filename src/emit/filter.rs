@@ -236,7 +236,7 @@ fn emit_request(list: &ListRequest, index: &Index, views: bool) -> Option<TokenS
                 &self,
             ) -> ::core::result::Result<
                 ::core::option::Option<::cel::Program>,
-                ::aip::FieldError<::cel::ParseErrors>,
+                ::aip::FieldError,
             > {
                 let filter: &str = #filter;
                 if filter.trim().is_empty() {

@@ -73,11 +73,10 @@ pub struct Segment {
 
 /// A parsed resource name pattern, e.g. `publishers/{publisher}/books/{book}`.
 ///
-/// Held here as well as in `aip::ResourcePattern` because the generator has to
-/// reason about the segments — to derive struct fields, to match a child
-/// against its parent — and the runtime keeps its segments private. Which
-/// patterns are valid is the runtime's alone to say: [`parse`](Self::parse)
-/// asks it.
+/// The generated code walks the segments itself, so which patterns are valid
+/// is this type's to say: [`parse`](Self::parse) holds a pattern to AIP-122's
+/// spelling, and a schema mistake becomes a `buf generate` failure naming the
+/// resource rather than a name type nothing can parse into.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
     /// The pattern as written in the annotation.
@@ -86,28 +85,73 @@ pub struct Pattern {
 }
 
 impl Pattern {
-    /// Parses a pattern string, rejecting exactly what
-    /// `aip::ResourcePattern::compile` rejects, by calling it.
+    /// Parses a pattern string.
     ///
-    /// The generated code compiles the same string at startup and panics if
-    /// it fails, so asking the runtime here — rather than keeping a copy of its
-    /// rules that could fall behind — turns a schema mistake into a
-    /// `buf generate` failure naming the resource.
+    /// A segment written as `{name}` captures a value; every other segment is a
+    /// literal that must match exactly. Segments are held to AIP-122's
+    /// spelling: a literal is a `camelCase` collection identifier and a
+    /// variable name is `snake_case`, each starting with a lowercase ASCII
+    /// letter, and a variable name is unique, so that an error can name a
+    /// segment unambiguously. Anything else -- `{book=**}` path-template syntax
+    /// included -- is rejected here rather than turning up later as a segment
+    /// that nothing can name.
+    ///
+    /// # Errors
+    ///
+    /// For an empty pattern or segment, a segment with a stray brace, an empty,
+    /// misspelt or repeated variable name, or a misspelt literal.
     fn parse(source: &str) -> Result<Self> {
-        aip::ResourcePattern::compile(source)?;
-        // Past the runtime's checks, a segment is either a literal or a whole
-        // `{name}`; nothing else is left to reject.
-        let segments = source
-            .split('/')
-            .map(|part| {
-                let variable = part.strip_prefix('{').and_then(|n| n.strip_suffix('}'));
-                Segment {
-                    name: variable.unwrap_or(part).to_owned(),
-                    variable: variable.is_some(),
-                    format: Format::default(),
+        let invalid = |reason: String| anyhow!("pattern {source:?}: {reason}");
+        if source.is_empty() {
+            return Err(invalid("empty pattern".to_owned()));
+        }
+        let mut segments: Vec<Segment> = Vec::new();
+        for (index, part) in source.split('/').enumerate() {
+            let malformed = || invalid(format!("malformed segment {part:?}"));
+            let Some(name) = part.strip_prefix('{') else {
+                if part.is_empty() {
+                    return Err(invalid(format!("empty segment {index}")));
                 }
-            })
-            .collect();
+                if has_brace(part) {
+                    return Err(malformed());
+                }
+                if !is_collection_id(part) {
+                    return Err(invalid(format!(
+                        "literal {part:?} is not a camelCase collection identifier"
+                    )));
+                }
+                segments.push(Segment {
+                    name: part.to_owned(),
+                    variable: false,
+                    format: Format::default(),
+                });
+                continue;
+            };
+            let Some(name) = name.strip_suffix('}') else {
+                return Err(malformed());
+            };
+            if name.is_empty() {
+                return Err(invalid(format!("empty variable name in segment {index}")));
+            }
+            if has_brace(name) {
+                return Err(malformed());
+            }
+            if !is_variable_name(name) {
+                return Err(invalid(format!("variable name {name:?} is not snake_case")));
+            }
+            // Linear, but a pattern has a handful of segments.
+            if segments
+                .iter()
+                .any(|segment| segment.variable && segment.name == name)
+            {
+                return Err(invalid(format!("duplicate variable {name:?}")));
+            }
+            segments.push(Segment {
+                name: name.to_owned(),
+                variable: true,
+                format: Format::default(),
+            });
+        }
         Ok(Self {
             source: source.to_owned(),
             segments,
@@ -178,6 +222,26 @@ fn render(segments: &[Segment]) -> String {
     out
 }
 
+/// Whether `text` holds a brace, which only a whole `{name}` segment may.
+fn has_brace(text: &str) -> bool {
+    text.contains(['{', '}'])
+}
+
+/// Whether `literal` is an AIP-122 collection identifier: `camelCase`, which is
+/// a lowercase ASCII letter followed by ASCII letters and digits.
+fn is_collection_id(literal: &str) -> bool {
+    let mut chars = literal.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase()) && chars.all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Whether `name` is usable as a variable name: `snake_case`, which is a
+/// lowercase ASCII letter followed by lowercase letters, digits and `_`.
+fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// The message a resource is declared on, when it is declared on one.
 ///
 /// A `google.api.resource_definition` at file scope has no message, and so no
@@ -237,6 +301,10 @@ impl Resource {
 /// refers to.
 #[derive(Debug, Clone)]
 pub struct Reference {
+    /// The message's fully-qualified proto name, e.g.
+    /// `library.v1.CreateBookRequest`: what the `wildcard_requests` option
+    /// names it by.
+    pub proto_name: String,
     /// The message's path within its package, e.g. `CreateBookRequest`.
     pub rust_path: String,
     /// The proto name of the referring field, e.g. `parent`.
@@ -853,6 +921,7 @@ fn resolve_reference(
         return Resolution::Skipped;
     };
     Resolution::Resolved(Reference {
+        proto_name: qualified(package, parents, message_name),
         rust_path: rust_path(parents, message_name),
         field_name,
         field_number: field_number(field),
@@ -929,6 +998,40 @@ mod tests {
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn a_malformed_pattern_says_what_is_wrong() {
+        let refused = |pattern: &str| Pattern::parse(pattern).unwrap_err().to_string();
+        assert_eq!(refused(""), r#"pattern "": empty pattern"#);
+        assert_eq!(
+            refused("publishers//books"),
+            r#"pattern "publishers//books": empty segment 1"#
+        );
+        assert_eq!(
+            refused("publishers/{publisher"),
+            r#"pattern "publishers/{publisher": malformed segment "{publisher""#
+        );
+        assert_eq!(
+            refused("publishers/{}"),
+            r#"pattern "publishers/{}": empty variable name in segment 1"#
+        );
+        assert_eq!(
+            refused("books/{book}/editions/{book}"),
+            r#"pattern "books/{book}/editions/{book}": duplicate variable "book""#
+        );
+        assert_eq!(
+            refused("book_shelves/{shelf}"),
+            r#"pattern "book_shelves/{shelf}": literal "book_shelves" is not a camelCase collection identifier"#
+        );
+        assert_eq!(
+            refused("books/{bookId}"),
+            r#"pattern "books/{bookId}": variable name "bookId" is not snake_case"#
+        );
+        assert_eq!(
+            refused("books/{book=**}"),
+            r#"pattern "books/{book=**}": variable name "book=**" is not snake_case"#
+        );
     }
 
     #[test]

@@ -21,11 +21,25 @@ fn a_single_pattern_resource_round_trips() {
     assert!(!name.contains_wildcard());
 }
 
+/// What parsing `name` as a `PublisherName` says is wrong with it.
+fn refused(name: &str) -> String {
+    ex::PublisherName::parse(name).unwrap_err().to_string()
+}
+
 #[test]
-fn parsing_rejects_a_name_of_another_shape() {
-    assert!(ex::PublisherName::parse("publishers/p1/books/b1").is_err());
-    assert!(ex::PublisherName::parse("authors/a1").is_err());
-    assert!(ex::PublisherName::parse("publishers/").is_err());
+fn parsing_rejects_a_name_of_another_shape_in_aip_gos_words() {
+    assert_eq!(
+        refused("publishers/p1/books/b1"),
+        r#"parse "publishers/p1/books/b1": bad number of segments, want: 2, got: 4"#
+    );
+    assert_eq!(
+        refused("authors/a1"),
+        r#"parse "authors/a1": bad segment 0, want: "publishers", got: "authors""#
+    );
+    assert_eq!(
+        refused("publishers/"),
+        r#"parse "publishers/": empty value for segment 1"#
+    );
 }
 
 #[test]
@@ -35,6 +49,19 @@ fn the_fully_qualified_form_requires_its_own_domain() {
     assert!(ex::PublisherName::parse_full("//other.example/publishers/p1").is_err());
     // Nor is the relative form, which `parse` is for.
     assert!(ex::PublisherName::parse_full("publishers/p1").is_err());
+    assert_eq!(
+        ex::PublisherName::parse_full("//other.example/publishers/p1")
+            .unwrap_err()
+            .to_string(),
+        r#"parse "//other.example/publishers/p1": invalid prefix, want: "//example.com/""#
+    );
+    // What follows the prefix is parsed as `parse` does, and fails as it does.
+    assert_eq!(
+        ex::PublisherName::parse_full("//example.com/authors/a1")
+            .unwrap_err()
+            .to_string(),
+        r#"parse "authors/a1": bad segment 0, want: "publishers", got: "authors""#
+    );
 }
 
 #[test]
@@ -51,9 +78,28 @@ fn a_multi_pattern_resource_tries_each_pattern_in_order() {
 
 #[test]
 fn a_name_matching_no_pattern_reports_every_attempt() {
+    // As aip-go's, which joins what each pattern said, one to a line.
     let error = ex::BookName::parse("shelves/s1/books/b1").unwrap_err();
-    assert_eq!(error.name(), "shelves/s1/books/b1");
-    assert_eq!(error.attempts().len(), 2);
+    assert_eq!(
+        error.to_string(),
+        [
+            r#"parse "shelves/s1/books/b1": no pattern matches: parse "shelves/s1/books/b1": bad segment 0, want: "publishers", got: "shelves""#,
+            r#"parse "shelves/s1/books/b1": bad segment 0, want: "authors", got: "shelves""#,
+        ]
+        .join("\n")
+    );
+    let error = ex::BookName::parse_full("//example.com/shelves/s1").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with(r#"parse "shelves/s1": no pattern matches"#)
+    );
+    assert_eq!(
+        ex::BookName::parse_full("shelves/s1")
+            .unwrap_err()
+            .to_string(),
+        r#"parse "shelves/s1": invalid prefix, want: "//example.com/""#
+    );
 }
 
 #[test]
@@ -165,7 +211,15 @@ fn validate_rejects_an_id_carrying_the_separator() {
         publisher_id: "p/1".to_owned(),
     };
     let error = name.validate().unwrap_err();
-    assert_eq!(error.segment(), Some("publisher"));
+    assert_eq!(
+        error.to_string(),
+        "publisher: contains illegal character '/'"
+    );
+    // And one that is empty, which `parse` refuses but a struct literal can say.
+    let name = ex::PublisherName {
+        publisher_id: String::new(),
+    };
+    assert_eq!(name.validate().unwrap_err().to_string(), "publisher: empty");
 }
 
 // --- UUID-typed segments (google.api.field_info.format = UUID4) ------------
@@ -176,13 +230,9 @@ const ID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 #[test]
 fn an_annotated_id_becomes_a_uuid_segment() {
     let name = ex::CollectionName::parse(&format!("collections/{ID}")).unwrap();
-    // The field is a typed segment, a Uuid or the wildcard, not a String --
-    // this would not compile otherwise.
-    let segment: aip::Segment<uuid::Uuid> = name.collection_id;
-    assert_eq!(
-        segment,
-        aip::Segment::Id(uuid::Uuid::parse_str(ID).unwrap())
-    );
+    // The field is a string, which a `Uuid` or the wildcard can both be; the
+    // typed id is `try_collection_id`.
+    assert_eq!(name.collection_id, ID);
     assert_eq!(
         name.try_collection_id().unwrap(),
         uuid::Uuid::parse_str(ID).unwrap()
@@ -192,17 +242,14 @@ fn an_annotated_id_becomes_a_uuid_segment() {
 
 #[test]
 fn a_segment_that_is_not_a_uuid_fails_to_parse() {
+    // Reported as the name not matching the pattern, as aip-go's is: the
+    // segment's index, then what `uuid` says.
     let error = ex::CollectionName::parse("collections/not-a-uuid").unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        aip::resource::ParseErrorKind::InvalidValue { name, .. } if name == "collection"
-    ));
-    // It is reported as the name not matching the pattern, not as a separate
-    // error type the caller has to handle alongside ParseError.
     assert!(
         error
             .to_string()
-            .contains("invalid value for segment (collection)")
+            .starts_with(r#"parse "collections/not-a-uuid": segment 1: "#),
+        "{error}"
     );
 }
 
@@ -219,13 +266,9 @@ const NON_CANONICAL: [&str; 4] = [
 fn a_segment_that_is_not_a_canonical_lowercase_uuid_fails_to_parse() {
     for id in NON_CANONICAL {
         let error = ex::CollectionName::parse(&format!("collections/{id}")).unwrap_err();
-        assert!(
-            matches!(
-                error.kind(),
-                aip::resource::ParseErrorKind::InvalidValue { name, reason }
-                    if name == "collection" && reason == &format!("{id:?} is not a canonical lowercase UUID")
-            ),
-            "{id}: {error}"
+        assert_eq!(
+            error.to_string(),
+            format!(r#"parse "collections/{id}": segment 1: not a canonical lowercase UUID"#)
         );
     }
     // A child's inherited segment is held to the same form.
@@ -246,7 +289,6 @@ fn a_child_inherits_its_parents_segment_format() {
     // Item's own create request -- the parent is what mints that id.
     let item = ex::ItemName::parse(&format!("organizations/{ID}/items/{ID}")).unwrap();
     let parent: ex::OrganizationName = item.parent();
-    // Typed straight through, with no string in between.
     assert_eq!(parent.organization_id, item.organization_id);
     assert_eq!(parent.item_name(item.try_item_id().unwrap()), item);
 }
@@ -260,7 +302,7 @@ fn a_pattern_can_mix_a_typed_and_an_untyped_segment() {
     assert_eq!(note.parent().organization_id, note.organization_id);
     assert_eq!(
         ex::OrganizationName {
-            organization_id: aip::Segment::Id(uuid::Uuid::parse_str(ID).unwrap())
+            organization_id: ID.to_owned()
         }
         .note_name("n1"),
         note
@@ -273,10 +315,10 @@ fn a_segment_of_either_kind_can_hold_the_wildcard() {
     let note = ex::NoteName::parse(&format!("organizations/{ID}/notes/-")).unwrap();
     assert!(note.contains_wildcard());
     // ...and the typed half, as aip-go's names hold it: it is the wildcard,
-    // not a Uuid.
+    // which is why it is a string.
     let note = ex::NoteName::parse("organizations/-/notes/n1").unwrap();
     assert!(note.contains_wildcard());
-    assert_eq!(note.organization_id, aip::Segment::Wildcard);
+    assert_eq!(note.organization_id, "-");
     assert_eq!(note.to_string(), "organizations/-/notes/n1");
     // A name with no wildcard in it has none.
     let item = ex::ItemName::parse(&format!("organizations/{ID}/items/{ID}")).unwrap();
@@ -304,7 +346,6 @@ fn the_wildcard_is_no_id() {
         uuid::Uuid::parse_str(ID).unwrap()
     );
     let error = item.try_organization_id().unwrap_err();
-    assert_eq!(error.segment(), "organization");
     assert_eq!(error.to_string(), "organization: the wildcard is not an id");
 }
 
@@ -313,20 +354,22 @@ fn a_name_with_the_wildcard_is_not_valid_to_write() {
     let item = ex::ItemName::parse(&format!("organizations/-/items/{ID}")).unwrap();
 
     let error = item.validate().unwrap_err();
-    assert_eq!(error.segment(), Some("organization"));
     assert_eq!(
-        error.kind(),
-        &aip::resource::InvalidResourceIdErrorKind::Wildcard
+        error.to_string(),
+        "organization: not a canonical non-nil UUID"
     );
 }
 
 #[test]
 fn the_nil_uuid_is_rejected_as_a_degenerate_id() {
     let name = ex::CollectionName {
-        collection_id: aip::Segment::Id(uuid::Uuid::nil()),
+        collection_id: uuid::Uuid::nil().to_string(),
     };
     let error = name.validate().unwrap_err();
-    assert_eq!(error.segment(), Some("collection"));
+    assert_eq!(
+        error.to_string(),
+        "collection: not a canonical non-nil UUID"
+    );
     assert!(
         ex::CollectionName::parse(&format!("collections/{ID}"))
             .unwrap()
@@ -357,11 +400,9 @@ fn an_empty_create_id_is_left_to_the_server() {
     assert_eq!(request.parse_collection_id().unwrap(), None);
 }
 
-/// The `ParseError` a `FieldError` says is wrong with its field.
-fn cause(error: &aip::FieldError<aip::resource::ParseError>) -> &aip::resource::ParseError {
-    std::error::Error::source(error)
-        .and_then(|source| source.downcast_ref())
-        .expect("a ParseError")
+/// The `ResourceNameError` a `FieldError` says is wrong with its field.
+fn cause(error: &aip::FieldError) -> &aip::resource::ResourceNameError {
+    error.failure().downcast_ref().expect("a ResourceNameError")
 }
 
 #[test]
@@ -377,10 +418,6 @@ fn a_proposed_id_that_is_not_a_uuid_fails_naming_the_field() {
     // The same error type a whole name produces, naming the request field the
     // caller sent rather than a segment of a name they did not: as aip-go's
     // `ParseCollectionID` reports it.
-    assert!(matches!(
-        error.kind(),
-        aip::resource::ParseErrorKind::InvalidId { field, .. } if field == "collection_id"
-    ));
     assert!(
         error
             .to_string()
@@ -486,4 +523,165 @@ fn the_accessors_are_emitted_for_views_too() {
         create.view().parse_collection_id().unwrap(),
         Some(uuid::Uuid::parse_str(ID).unwrap())
     );
+}
+
+// --- The name or parent of a request ---------------------------------------
+
+/// The failure a `FieldError` says is wrong with its field, as text.
+fn why(error: &aip::FieldError) -> String {
+    error.failure().to_string()
+}
+
+#[test]
+fn a_request_is_strict_by_default_so_a_wildcard_is_no_name() {
+    // A key a method acts on: parsed, and then validated.
+    let get = proto::example::v1::GetItemRequest {
+        name: format!("organizations/{ID}/items/{ID}"),
+        ..Default::default()
+    };
+    assert_eq!(get.parse_name().unwrap().item_id, ID);
+
+    let get = proto::example::v1::GetItemRequest {
+        name: format!("organizations/-/items/{ID}"),
+        ..Default::default()
+    };
+    let error = get.parse_name().unwrap_err();
+    assert_eq!(error.path().to_string(), "name");
+    assert_eq!(why(&error), "organization: not a canonical non-nil UUID");
+
+    // A name of the wrong shape fails the parse, as before, before validating.
+    let get = proto::example::v1::GetItemRequest {
+        name: "items/1".to_owned(),
+        ..Default::default()
+    };
+    assert!(why(&get.parse_name().unwrap_err()).starts_with(r#"parse "items/1": bad number"#));
+
+    // For a resource of several patterns too, through the enum.
+    let get = proto::example::v1::GetBookRequest {
+        name: "publishers/p1/books/b1".to_owned(),
+        ..Default::default()
+    };
+    assert!(get.parse_name().is_ok());
+    let get = proto::example::v1::GetBookRequest {
+        name: "publishers/p1/books/".to_owned(),
+        ..Default::default()
+    };
+    assert!(get.parse_name().is_err());
+
+    // The `parent` of a create is held to it too.
+    let create = proto::example::v1::CreateItemRequest {
+        parent: "organizations/-".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        why(&create.parse_parent().unwrap_err()),
+        "organization: not a canonical non-nil UUID"
+    );
+}
+
+#[test]
+fn a_string_id_is_not_refused_the_wildcard_by_validate() {
+    // As aip-go's: `validate` refuses what is no id for certain -- empty, a `/`,
+    // a UUID segment that is not a canonical, non-nil one. A string segment
+    // has no other form to hold it to, so `-` is only refused by a request that
+    // names the resource itself and is listed, below.
+    let get = proto::example::v1::GetPublisherRequest {
+        name: "publishers/-".to_owned(),
+        ..Default::default()
+    };
+    assert!(get.parse_name().unwrap().is_wildcard());
+}
+
+#[test]
+fn a_listed_request_may_read_across_parents() {
+    let list = proto::example::v1::ListItemsRequest {
+        parent: "organizations/-".to_owned(),
+        ..Default::default()
+    };
+    let parent = list.parse_parent().unwrap();
+    assert!(parent.is_wildcard());
+
+    // Parsed all the same: it is a wildcard or a canonical id, nothing else.
+    let list = proto::example::v1::ListItemsRequest {
+        parent: "organizations/nope".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        list.parse_parent().unwrap_err().path().to_string(),
+        "parent"
+    );
+}
+
+#[test]
+fn a_listed_name_may_have_a_wildcard_parent_but_not_be_one() {
+    let delete = proto::example::v1::DeleteItemRequest {
+        name: format!("organizations/-/items/{ID}"),
+        ..Default::default()
+    };
+    let name = delete.parse_name().unwrap();
+    assert!(name.contains_wildcard() && !name.is_wildcard());
+
+    // The item itself is the resource: a wildcard is none.
+    let delete = proto::example::v1::DeleteItemRequest {
+        name: format!("organizations/{ID}/items/-"),
+        ..Default::default()
+    };
+    let error = delete.parse_name().unwrap_err();
+    assert_eq!(error.path().to_string(), "name");
+    assert_eq!(why(&error), "item: the wildcard is not an id");
+
+    // The same for an id of no format, which is compared rather than parsed.
+    let delete = proto::example::v1::DeleteNoteRequest {
+        name: "organizations/-/notes/n1".to_owned(),
+        ..Default::default()
+    };
+    assert!(delete.parse_name().is_ok());
+    let delete = proto::example::v1::DeleteNoteRequest {
+        name: format!("organizations/{ID}/notes/-"),
+        ..Default::default()
+    };
+    assert_eq!(
+        why(&delete.parse_name().unwrap_err()),
+        "note: the wildcard is not an id"
+    );
+
+    let delete = proto::example::v1::DeletePublisherRequest {
+        name: "publishers/-".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        why(&delete.parse_name().unwrap_err()),
+        "publisher: the wildcard is not an id"
+    );
+}
+
+#[test]
+fn a_listed_name_of_several_patterns_only_parses() {
+    // The parsed name is an enum with no one segment that is its own; the
+    // option does not guess.
+    let delete = proto::example::v1::DeleteBookRequest {
+        name: "publishers/p1/books/-".to_owned(),
+        ..Default::default()
+    };
+    assert!(delete.parse_name().unwrap().contains_wildcard());
+}
+
+#[test]
+fn any_other_reference_may_carry_a_wildcard() {
+    let bookmark = proto::example::v1::Bookmark {
+        publisher: "publishers/-".to_owned(),
+        ..Default::default()
+    };
+    assert!(bookmark.parse_publisher().unwrap().is_wildcard());
+}
+
+#[test]
+fn a_resources_own_name_is_only_parsed() {
+    // The message that is the resource -- a `Book` returned by a server, say --
+    // may hold a name with a wildcard: it is parsed, not acted on.
+    let book = proto::example::v1::Book {
+        name: "publishers/-/books/b1".to_owned(),
+        ..Default::default()
+    };
+    assert!(book.parse_name().unwrap().contains_wildcard());
 }

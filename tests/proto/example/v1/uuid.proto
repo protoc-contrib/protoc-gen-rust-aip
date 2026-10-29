@@ -76,3 +76,27 @@ message CreateNoteRequest {
   Note note = 2;
   string note_id = 3;
 }
+
+// Strict, as every request is unless it is listed in `wildcard_requests`: a
+// wildcard in `name` or the nil UUID is no item to get.
+message GetItemRequest {
+  string name = 1 [(google.api.resource_reference) = { type: "example.com/Item" }];
+}
+
+// Listed in `wildcard_requests`: its parent may be the wildcard, to list the
+// items of every organization.
+message ListItemsRequest {
+  string parent = 1 [(google.api.resource_reference) = { type: "example.com/Organization" }];
+}
+
+// Listed in `wildcard_requests`: the organization above the item may be the
+// wildcard, but the item itself, a UUID, may not.
+message DeleteItemRequest {
+  string name = 1 [(google.api.resource_reference) = { type: "example.com/Item" }];
+}
+
+// Listed in `wildcard_requests`, with an opaque id of its own, which may not be
+// the wildcard either.
+message DeleteNoteRequest {
+  string name = 1 [(google.api.resource_reference) = { type: "example.com/Note" }];
+}

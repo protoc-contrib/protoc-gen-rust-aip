@@ -91,6 +91,17 @@ fn main() -> Result<()> {
             // On, so the ResourceWrites impls and the PROCEDURES table are
             // type-checked against aip-rs's connect API.
             connect: true,
+            // A request that reads across parents, or deletes under any of
+            // them; every other request is strict.
+            wildcard_requests: [
+                "example.v1.DeletePublisherRequest",
+                "example.v1.DeleteBookRequest",
+                "example.v1.ListItemsRequest",
+                "example.v1.DeleteItemRequest",
+                "example.v1.DeleteNoteRequest",
+            ]
+            .map(str::to_owned)
+            .into(),
         },
     )?;
 

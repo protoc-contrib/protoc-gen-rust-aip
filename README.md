@@ -51,7 +51,7 @@ Only what a schema actually uses:
 
 | Crate | Needed when |
 | --- | --- |
-| [`aip-rs`](https://crates.io/crates/aip-rs) (as `aip`) | always |
+| [`aip-rs`](https://github.com/protoc-contrib/aip-rs) 0.12 or later (as `aip`) | always |
 | `buffa-types` | a resource is declared on a message (`implied_field_mask` returns its `FieldMask`) |
 | `uuid` | a resource ID is annotated `UUID4` |
 | [`cel`](https://crates.io/crates/cel) 0.15 | a List request carries a `filter` |
@@ -75,7 +75,7 @@ Go's `FilterEnv`:
 pub static LIST_VOLUMES_FILTER_ENV: LazyLock<Arc<cel::Env>>;
 
 impl ListVolumesRequest {
-    pub fn parse_filter(&self) -> Result<Option<cel::Program>, aip::FieldError<cel::ParseErrors>>;
+    pub fn parse_filter(&self) -> Result<Option<cel::Program>, aip::FieldError>;
 }
 ```
 
@@ -197,7 +197,7 @@ with aip-rs's `descriptor` feature.
 ```rust
 impl CreateCollectionRequest {
     pub fn parse_collection_id(&self)
-        -> Result<Option<uuid::Uuid>, aip::FieldError<aip::resource::ParseError>>;
+        -> Result<Option<uuid::Uuid>, aip::FieldError>;
 }
 
 // A server fills the empty case with the UUID it mints:
@@ -218,9 +218,9 @@ no minting rule the schema states, and a multi-pattern resource's create request
 does not say which pattern it is creating under, so neither gets an accessor
 rather than getting a guess. A proposed nil UUID is refused too: it parses,
 but no name built from it validates. A failure is reported as the same
-`ParseError` an unparseable segment produces when reading a whole name, so a
-call site handles one error type either way, in a `FieldError` that names the
-field (`collection_id`).
+`ResourceNameError` an unparseable segment produces when reading a whole name,
+so a call site handles one error type either way, in a `FieldError` that names
+the field (`collection_id`).
 
 Needs no `uuid` feature beyond its defaults: the generated code only parses.
 A server needs whichever minting feature it calls — `v7` for `now_v7`.
@@ -336,20 +336,34 @@ rejected for; [protoc-gen-aip-lint](https://github.com/protoc-contrib/protoc-gen
 ### Resource names
 
 Emit a concrete type per resource — `BookName { publisher_id, book_id }` —
-with a typed `parent()` and parent-to-child builders. Delegate the segment
-walking to `aip-rs`'s compiled pattern rather than inlining it, so a fix to
-the walk ships as a dependency bump rather than a regeneration of every
-consumer.
-
-Keep parsing generated and typed. A runtime parser taking a pattern *string*
-gives up the compile-time link between the pattern and its variables, and the
-pattern is always known at codegen time.
+with a typed `parent()` and parent-to-child builders, and inline `parse`,
+`parse_full`, `validate` and `Display`, as protoc-gen-go-aip emits them: the
+pattern is always known at codegen time, so a runtime parser taking a pattern
+*string* would give up the compile-time link between the pattern and its
+variables, and aip-rs holds none. What it holds is what is shared: the
+`aip::ResourceName` trait a name satisfies and the one error every parse and
+validation fails with, `aip::resource::ResourceNameError`, whose messages are
+aip-go's:
 
 ```rust
 let book = BookName::parse("publishers/p1/books/b1")?;
 let publisher: PublisherName = book.parent();
 assert_eq!(publisher.book_name("b2").to_string(), "publishers/p1/books/b2");
+
+PublisherName::parse("publishers/p1/books/b1")
+// parse "publishers/p1/books/b1": bad number of segments, want: 2, got: 4
+PublisherName::parse("authors/a1")
+// parse "authors/a1": bad segment 0, want: "publishers", got: "authors"
+PublisherName::parse("publishers/")
+// parse "publishers/": empty value for segment 1
+PublisherName { publisher_id: "p/1".into() }.validate()
+// publisher: contains illegal character '/'
 ```
+
+A pattern is held to AIP-122's spelling when it is read from the schema, so a
+mistake fails `buf generate` naming the resource: a literal is a `camelCase`
+collection identifier, a variable name is `snake_case` and unique, and nothing
+is empty or carries a stray brace (`{book=**}` path-template syntax included).
 
 A resource with more than one pattern becomes an **enum** over one struct per
 pattern. Go modelled this as a sealed interface; the enum is the closer fit,
@@ -385,14 +399,15 @@ message CreateItemRequest {
 }
 ```
 
-`ItemName.item_id` is then an `aip::Segment<uuid::Uuid>`, not a `String`: a
-`Uuid` or the AIP-159 wildcard `-`, as aip-go's string segments can be either.
-The id itself is `try_item_id()`, which fails for the wildcard, and the builder takes
-a `Uuid`:
+`ItemName.item_id` is still a `String`, as aip-go's is: a canonical `Uuid`, or
+the AIP-159 wildcard `-`, which a `Uuid` cannot hold. `parse` reads only the
+canonical lowercase, hyphenated form -- the one it formats back to -- and
+`try_item_id()` is the typed id, which fails for the wildcard; the builder
+takes a `Uuid`:
 
 ```rust
 let item = organization.item_name(id);   // id: uuid::Uuid
-let id: uuid::Uuid = item.try_item_id()?;    // SegmentError for `-`; aip-go's ParseItemID
+let id: uuid::Uuid = item.try_item_id()?;    // `item: the wildcard is not an id` for `-`; aip-go's ParseItemID
 ```
 
 Only a schema that annotates an ID needs the `uuid` crate — nothing else in the
@@ -409,9 +424,35 @@ A name is read with the wildcard in it -- `collections/-/items/{item}` -- and
 a handler asks it whether it has one, as aip-go's does: `contains_wildcard()`
 (any segment), `is_wildcard()` (every one), and `parent().contains_wildcard()`.
 `validate()` refuses a name with the wildcard in a typed segment, and the nil
-UUID: it is a name to read across, not a resource to write. A conversion that
-fails is reported as `ParseError`, the same error as any other name that does not
-match the pattern, rather than as a second error type at the call site.
+UUID: it is a name to read across, not a resource to write. A segment that is
+not a UUID is reported by `parse` as the same `ResourceNameError` as any other
+name that does not match the pattern, rather than as a second error type at the
+call site.
+
+#### The name or parent of a request is validated
+
+A reference that is the `name` or `parent` of a request is the key a standard
+method (AIP-131 to AIP-135) acts on, so its accessor -- `parse_name`,
+`parse_parent` -- parses the name and then calls `validate()`: a wildcard in a
+UUID segment, the nil UUID, an empty or `/`-carrying id is no name to act on,
+and fails naming the field. Any other reference, and the message that is the
+resource itself, only parse.
+
+AIP-159 makes reading across parents optional, so a request that allows it says
+so, with the `wildcard_requests` option, as protoc-gen-go-aip's -- the full
+name of the request, once per request:
+
+```yaml
+    opt:
+      - wildcard_requests=example.v1.ListItemsRequest
+      - wildcard_requests=example.v1.DeleteItemRequest
+```
+
+For a listed request the accessor only parses, except that a `name` still
+refuses the wildcard in the resource's own segment (`item: the wildcard is not
+an id`): a parent may be `-`, but a resource that is none is no resource. A
+resource of several patterns is an enum with no one own segment, so for a listed
+`name` of one it only parses.
 
 No `Format<T>Name` / `Parse<T>ID` free functions are emitted. They were Go's,
 for goverter's `extend` directive, which has no Rust counterpart; a struct
@@ -483,7 +524,7 @@ violation names a field:
 ```rust
 impl Shipment {
     pub fn parse_name(&self)
-        -> Result<ShipmentName, aip::FieldError<aip::resource::ParseError>> {
+        -> Result<ShipmentName, aip::FieldError> {
         ShipmentName::parse(&self.name).map_err(|error| {
             aip::FieldError::new(aip::FieldPath::field("name", 1, aip::FieldType::String), error)
         })
@@ -493,12 +534,12 @@ impl Shipment {
 let error = request.parse_name().unwrap_err();
 assert_eq!(error.path().to_string(), "name");   // where it failed
 // error.to_string() is `name: parse "...": ...`, and std::error::Error::source()
-// is the ParseError. A handler names the field in a google.rpc.BadRequest with it.
+// is the ResourceNameError. A handler names the field in a google.rpc.BadRequest with it.
 ```
 
 A caller holding the message inside another puts the path where it is with
 `FieldError::prefixed`. `ShipmentName::parse` and `parse_full`, which parse a
-string and not a field, still return the bare `ParseError`.
+string and not a field, still return the bare `ResourceNameError`.
 
 With `views=true` every read-only accessor — `parse_name`, `parse_full_name`,
 `parse_<reference>`, `parse_<resource>_id`, `parse_filter` — is emitted

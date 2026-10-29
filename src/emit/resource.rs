@@ -3,10 +3,13 @@
 //! the matching parent-to-child builder, and the accessors that hang the whole
 //! thing off the buffa-generated messages.
 //!
-//! Segment walking is delegated to `aip::ResourcePattern` rather than inlined,
-//! so a fix to the walk reaches consumers as a dependency bump. What stays
-//! generated is everything that is typed: which fields exist, what `parent()`
-//! returns, which builder a parent gets.
+//! The segment walk is emitted inline, as protoc-gen-go-aip emits it: a
+//! `parse` that splits on `/` and checks each segment in turn, with the words
+//! aip-go uses for a failure, returning `aip::resource::ResourceNameError`.
+//! What the runtime holds is only what is shared -- the error, the trait a name
+//! satisfies, the wildcard -- so a fix to the walk reaches a consumer as a
+//! regeneration, and a consumer's name types depend on nothing they cannot
+//! read.
 
 #![allow(
     clippy::too_many_lines,
@@ -17,7 +20,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::emit::{doc, impl_for, package_depth, short_name};
+use crate::emit::{Options, doc, impl_for, package_depth, short_name};
 use crate::idents::snake_case;
 use crate::messages::{Index, Kind};
 use crate::scan::{Format, Pattern, Reference, Registry, Resource, Segment};
@@ -34,13 +37,14 @@ const EXAMPLE_UUID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 /// Anything a schema can get wrong is rejected during the scan, so by the time
 /// a resource reaches the emitter there is nothing left to fail on.
 #[must_use]
-pub fn emit_file(file: &str, package: &str, registry: &Registry, views: bool) -> TokenStream {
+pub fn emit_file(file: &str, package: &str, registry: &Registry, options: &Options) -> TokenStream {
+    let views = options.views;
     let mut items = Vec::new();
     for resource in registry.by_file(file) {
         items.push(emit_resource(resource, package, registry, views));
     }
     for reference in registry.references.get(file).into_iter().flatten() {
-        items.push(emit_reference(reference, package, registry, views));
+        items.push(emit_reference(reference, package, registry, options));
     }
     quote! { #( #items )* }
 }
@@ -57,15 +61,45 @@ fn emit_resource(
     let pattern = &resource.patterns[0];
     let name_type = format_ident!("{}", resource.name_type());
     let variant = emit_pattern_struct(resource, &name_type, pattern, package, registry, None);
-    let message = emit_message_accessors(
-        resource,
-        &name_type,
-        &quote! { ::aip::resource::ParseError },
-        views,
-    );
+    let message = emit_message_accessors(resource, &name_type, views);
     quote! {
         #variant
         #message
+    }
+}
+
+/// The error every parse and validation of a name fails with.
+fn name_error() -> TokenStream {
+    quote! { ::aip::resource::ResourceNameError }
+}
+
+/// `Err(ResourceNameError::new(<message>))`, where `message` is the arguments of
+/// a `format!`.
+fn failure(message: &TokenStream) -> TokenStream {
+    let error = name_error();
+    quote! {
+        ::core::result::Result::Err(#error::new(::std::format!(#message)))
+    }
+}
+
+/// [`failure`] as a statement that returns it, for a check part-way through a
+/// function. A tail position has no use for the `return`, which clippy's
+/// `needless_return` would say.
+fn fail(message: &TokenStream) -> TokenStream {
+    let failure = failure(message);
+    quote! { return #failure; }
+}
+
+/// The `parse_full` of a name type: the service domain's `//` prefix, then
+/// whatever `parse` makes of the rest.
+fn parse_full_body(domain: &str) -> TokenStream {
+    let prefix = format!("//{domain}/");
+    let refuse = fail(&quote! { "parse {name:?}: invalid prefix, want: {:?}", #prefix });
+    quote! {
+        let ::core::option::Option::Some(relative) = name.strip_prefix(#prefix) else {
+            #refuse
+        };
+        Self::parse(relative)
     }
 }
 
@@ -124,21 +158,6 @@ fn emit_multi_pattern(
             }
         })
         .collect();
-    let try_each_full: Vec<TokenStream> = variants
-        .iter()
-        .map(|variant| {
-            let ident = variant_ident(variant, resource);
-            let variant_type = format_ident!("{}", variant);
-            quote! {
-                match #variant_type::parse_full(name) {
-                    ::core::result::Result::Ok(parsed) => {
-                        return ::core::result::Result::Ok(Self::#ident(parsed));
-                    }
-                    ::core::result::Result::Err(error) => attempts.push(error),
-                }
-            }
-        })
-        .collect();
 
     // Every delegation is written as a fully-qualified call. The generated file
     // is included into a module this plugin does not control, so `name.fmt(f)`
@@ -158,7 +177,8 @@ fn emit_multi_pattern(
     let display_arms = dispatch(&|name| quote! { ::core::fmt::Display::fmt(#name, f) });
     let pattern_arms = dispatch(&|name| quote! { ::aip::ResourceName::pattern(#name) });
     let validate_arms = dispatch(&|name| quote! { ::aip::ResourceName::validate(#name) });
-    let wildcard_arms = dispatch(&|name| quote! { ::aip::ResourceName::contains_wildcard(#name) });
+    let contains_arms = dispatch(&|name| quote! { #name.contains_wildcard() });
+    let is_arms = dispatch(&|name| quote! { #name.is_wildcard() });
 
     let conversions: Vec<TokenStream> = variants
         .iter()
@@ -177,6 +197,7 @@ fn emit_multi_pattern(
 
     let count = resource.patterns.len();
     let resource_type = Literal::string(&resource.resource_type);
+    let error = name_error();
     let struct_doc = doc(&format!(
         "The parsed form of a `{}` resource name.\n\n\
          The resource declares {count} patterns, so a parsed name is one of them.",
@@ -191,19 +212,23 @@ fn emit_multi_pattern(
         resource.resource_type,
     ));
     let parse_full_doc = doc(&format!(
-        "Parses the fully-qualified resource name, prefixed `//{}/`, trying \
-         each pattern in declaration order.\n\n\
+        "Parses the fully-qualified resource name, prefixed `//{}/`, and \
+         then as [`parse`](Self::parse) does.\n\n\
          # Errors\n\n\
-         If `name` matches none of the {count} patterns, including because it \
-         carries the wrong prefix.",
+         If `name` does not carry the prefix, or what follows it matches none \
+         of the {count} patterns.",
         resource.domain,
     ));
-    let message = emit_message_accessors(
-        resource,
-        &name_type,
-        &quote! { ::aip::resource::NoPatternError },
-        views,
-    );
+    let no_pattern = failure(&quote! {
+        "parse {name:?}: no pattern matches: {}",
+        attempts
+            .iter()
+            .map(::std::string::ToString::to_string)
+            .collect::<::std::vec::Vec<_>>()
+            .join("\n")
+    });
+    let parse_full = parse_full_body(&resource.domain);
+    let message = emit_message_accessors(resource, &name_type, views);
 
     quote! {
         #( #structs )*
@@ -227,25 +252,32 @@ fn emit_multi_pattern(
             pub const TYPE: &'static str = #resource_type;
 
             #parse_doc
-            pub fn parse(
-                name: &str,
-            ) -> ::core::result::Result<Self, ::aip::resource::NoPatternError> {
-                let mut attempts = ::std::vec::Vec::with_capacity(#count);
+            pub fn parse(name: &str) -> ::core::result::Result<Self, #error> {
+                let mut attempts: ::std::vec::Vec<#error> =
+                    ::std::vec::Vec::with_capacity(#count);
                 #( #try_each )*
-                ::core::result::Result::Err(
-                    ::aip::resource::NoPatternError::new(name, attempts),
-                )
+                #no_pattern
             }
 
             #parse_full_doc
-            pub fn parse_full(
-                name: &str,
-            ) -> ::core::result::Result<Self, ::aip::resource::NoPatternError> {
-                let mut attempts = ::std::vec::Vec::with_capacity(#count);
-                #( #try_each_full )*
-                ::core::result::Result::Err(
-                    ::aip::resource::NoPatternError::new(name, attempts),
-                )
+            pub fn parse_full(name: &str) -> ::core::result::Result<Self, #error> {
+                #parse_full
+            }
+
+            /// Whether any variable segment is the AIP-159 wildcard.
+            #[must_use]
+            pub fn contains_wildcard(&self) -> bool {
+                match self {
+                    #( #contains_arms, )*
+                }
+            }
+
+            /// Whether every variable segment is the AIP-159 wildcard.
+            #[must_use]
+            pub fn is_wildcard(&self) -> bool {
+                match self {
+                    #( #is_arms, )*
+                }
             }
         }
 
@@ -258,7 +290,7 @@ fn emit_multi_pattern(
         }
 
         impl ::core::str::FromStr for #name_type {
-            type Err = ::aip::resource::NoPatternError;
+            type Err = #error;
 
             fn from_str(name: &str) -> ::core::result::Result<Self, Self::Err> {
                 Self::parse(name)
@@ -276,17 +308,9 @@ fn emit_multi_pattern(
                 }
             }
 
-            fn validate(
-                &self,
-            ) -> ::core::result::Result<(), ::aip::resource::InvalidResourceIdError> {
+            fn validate(&self) -> ::core::result::Result<(), #error> {
                 match self {
                     #( #validate_arms, )*
-                }
-            }
-
-            fn contains_wildcard(&self) -> bool {
-                match self {
-                    #( #wildcard_arms, )*
                 }
             }
         }
@@ -294,6 +318,144 @@ fn emit_multi_pattern(
         #( #conversions )*
 
         #message
+    }
+}
+
+/// `return Err(refuse(format_args!(<message>)))`: a `parse` that fails, with
+/// what is wrong with the name, which `refuse` -- see [`parse_checks`] -- puts
+/// after the `parse "<name>": ` every such failure begins with.
+fn refuse(message: &TokenStream) -> TokenStream {
+    quote! {
+        return ::core::result::Result::Err(refuse(::core::format_args!(#message)));
+    }
+}
+
+/// The segment checks of a pattern's `parse`: the number of segments, then one
+/// check per segment, in the words aip-go uses.
+///
+/// A segment index is the pattern's own, literals counted, as aip-go's is.
+fn parse_checks(pattern: &Pattern) -> TokenStream {
+    let count = Literal::usize_unsuffixed(pattern.segments.len());
+    let wrong_count = refuse(&quote! {
+        "bad number of segments, want: {}, got: {}",
+        #count,
+        parts.len()
+    });
+    let checks: Vec<TokenStream> = pattern
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let at = Literal::usize_unsuffixed(index);
+            if !segment.variable {
+                let literal = &segment.name;
+                let wrong = refuse(&quote! {
+                    "bad segment {}, want: {:?}, got: {:?}",
+                    #at,
+                    #literal,
+                    parts[#at]
+                });
+                return quote! {
+                    if parts[#at] != #literal {
+                        #wrong
+                    }
+                };
+            }
+            let empty = refuse(&quote! { "empty value for segment {}", #at });
+            let canonical = match segment.format {
+                Format::String => TokenStream::new(),
+                // A UUID segment is a canonical UUID, or the AIP-159 wildcard,
+                // which is why the field is a string: a `Uuid` cannot hold it.
+                // `uuid` also reads uppercase, braced, `urn:uuid:` and
+                // unhyphenated text, which a name read from would not
+                // round-trip (AIP-122), so only the canonical lowercase,
+                // hyphenated form -- the one it formats to -- is a segment.
+                Format::Uuid => {
+                    let uncanonical = refuse(&quote! {
+                        "segment {}: not a canonical lowercase UUID", #at
+                    });
+                    quote! {
+                        if parts[#at] != ::aip::resource::RESOURCE_WILDCARD {
+                            let id = <::uuid::Uuid as ::core::str::FromStr>::from_str(parts[#at])
+                                .map_err(|error| {
+                                    refuse(::core::format_args!("segment {}: {error}", #at))
+                                })?;
+                            if ::std::string::ToString::to_string(&id) != parts[#at] {
+                                #uncanonical
+                            }
+                        }
+                    }
+                }
+            };
+            quote! {
+                if parts[#at].is_empty() {
+                    #empty
+                }
+                #canonical
+            }
+        })
+        .collect();
+    let error = name_error();
+    quote! {
+        let refuse = |reason: ::core::fmt::Arguments<'_>| {
+            #error::new(::std::format!("parse {name:?}: {reason}"))
+        };
+        let parts: ::std::vec::Vec<&str> = name.split('/').collect();
+        if parts.len() != #count {
+            #wrong_count
+        }
+        #( #checks )*
+    }
+}
+
+/// The checks of a pattern's `validate`: every variable segment is usable as the
+/// id of a resource.
+///
+/// A string segment is non-empty and holds no `/`. A UUID segment is a
+/// canonical, non-nil UUID, which the wildcard is not: it is a name to read
+/// across, not a resource to write.
+fn validate_checks(segments: &[&Segment], fields: &[proc_macro2::Ident]) -> Vec<TokenStream> {
+    segments
+        .iter()
+        .zip(fields)
+        .map(|(segment, field)| match segment.format {
+            Format::String => {
+                let empty = fail_with(&format!("{}: empty", segment.name));
+                let separator = fail_with(&format!(
+                    "{}: contains illegal character '/'",
+                    segment.name
+                ));
+                quote! {
+                    if self.#field.is_empty() {
+                        #empty
+                    }
+                    if self.#field.contains('/') {
+                        #separator
+                    }
+                }
+            }
+            Format::Uuid => {
+                let refused = fail_with(&format!("{}: not a canonical non-nil UUID", segment.name));
+                quote! {
+                    match <::uuid::Uuid as ::core::str::FromStr>::from_str(&self.#field) {
+                        ::core::result::Result::Ok(id)
+                            if !id.is_nil() && ::std::string::ToString::to_string(&id) == self.#field => {}
+                        _ => {
+                            #refused
+                        }
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// `return Err(ResourceNameError::new("<message>"))`, for a message with nothing
+/// left to format.
+fn fail_with(message: &str) -> TokenStream {
+    let error = name_error();
+    quote! {
+        return ::core::result::Result::Err(#error::new(#message));
     }
 }
 
@@ -312,9 +474,11 @@ fn emit_pattern_struct(
     enclosing: Option<&proc_macro2::Ident>,
 ) -> TokenStream {
     let segments: Vec<&Segment> = pattern.variables().collect();
-    let arity = segments.len();
     let fields: Vec<proc_macro2::Ident> = segments.iter().map(|s| id_field(&s.name)).collect();
 
+    // Every segment is a `String`, a typed one included, so that it can hold
+    // the AIP-159 wildcard `-`, which a `Uuid` cannot; the typed id comes from
+    // the `try_<segment>_id` accessor, as aip-go's from `Parse<Segment>ID`.
     let field_decls: Vec<TokenStream> = segments
         .iter()
         .zip(&fields)
@@ -327,116 +491,34 @@ fn emit_pattern_struct(
                     segment.name,
                 ),
             });
-            let ty = segment_type(segment.format);
-            quote! { #doc pub #field: #ty }
+            quote! { #doc pub #field: ::std::string::String }
         })
         .collect();
 
-    // A scan only ever yields `&str`, so a segment declared as something
-    // narrower is converted here, and a failed conversion is reported as one
-    // more way the name does not match the pattern. A UUID must be in the
-    // canonical lowercase, hyphenated form, the one it formats back to:
-    // `uuid` also reads uppercase, braced, `urn:uuid:` and unhyphenated text,
-    // and a name read from one would not round-trip (AIP-122).
-    let assignments: Vec<TokenStream> = segments
+    // The values, taken from the parts `parse_checks` has walked: the
+    // variable segments are the parts at the indices that are not literals.
+    let assignments: Vec<TokenStream> = pattern
+        .segments
         .iter()
-        .zip(&fields)
         .enumerate()
-        .map(|(index, (segment, field))| {
+        .filter(|(_, segment)| segment.variable)
+        .zip(&fields)
+        .map(|((index, _), field)| {
             let index = Literal::usize_unsuffixed(index);
-            match segment.format {
-                Format::String => {
-                    quote! { #field: ::std::borrow::ToOwned::to_owned(ids[#index]) }
-                }
-                Format::Uuid => {
-                    let variable = Literal::string(&segment.name);
-                    quote! {
-                        #field: if ids[#index] == ::aip::resource::WILDCARD {
-                            ::aip::Segment::Wildcard
-                        } else {
-                            ::aip::Segment::Id(
-                                match <::uuid::Uuid as ::core::str::FromStr>::from_str(ids[#index]) {
-                                    ::core::result::Result::Ok(value)
-                                        if &*value.hyphenated().encode_lower(&mut ::uuid::Uuid::encode_buffer())
-                                            != ids[#index] =>
-                                    {
-                                        return ::core::result::Result::Err(Self::compiled().invalid_value(
-                                            name,
-                                            #variable,
-                                            ::std::format!("{:?} is not a canonical lowercase UUID", ids[#index]),
-                                        ));
-                                    }
-                                    ::core::result::Result::Ok(value) => value,
-                                    ::core::result::Result::Err(error) => {
-                                        return ::core::result::Result::Err(
-                                            Self::compiled().invalid_value(name, #variable, error),
-                                        );
-                                    }
-                                },
-                            )
-                        }
-                    }
-                }
-            }
+            quote! { #field: ::std::borrow::ToOwned::to_owned(parts[#index]) }
         })
         .collect();
 
     let display = display_impl(name_type, pattern, &fields);
+    let parse_checks = parse_checks(pattern);
+    let parse_full = parse_full_body(&resource.domain);
+    let checks = validate_checks(&segments, &fields);
 
-    // A pattern with no variables is a singleton: there are no ids to check,
-    // and the empty slice needs a type for inference.
-    let ids: TokenStream = if arity == 0 {
-        quote! { let ids: [&str; 0] = []; }
-    } else {
-        let arity = Literal::usize_unsuffixed(arity);
-        quote! { let mut ids = [""; #arity]; }
-    };
-    let ids_ref = if arity == 0 {
-        quote! { &ids }
-    } else {
-        quote! { &mut ids }
-    };
-    // Validated a segment at a time rather than through
-    // `ResourcePattern::validate`, which needs every value as a string and so
-    // has nothing to say about a typed one.
-    let checks: Vec<TokenStream> = segments
+    // A segment is the wildcard if it reads `-`.
+    let wildcards: Vec<TokenStream> = fields
         .iter()
-        .zip(&fields)
-        .map(|(segment, field)| {
-            let variable = Literal::string(&segment.name);
-            match segment.format {
-                Format::String => quote! {
-                    ::aip::resource::validate_segment(#variable, &self.#field)?;
-                },
-                // A UUID cannot be empty or hold a `/`; the nil UUID is the
-                // degenerate value worth rejecting in its place, and the
-                // wildcard is a name to read across, not a resource to write.
-                Format::Uuid => quote! {
-                    match self.#field {
-                        ::aip::Segment::Wildcard => {
-                            return ::core::result::Result::Err(
-                                ::aip::resource::InvalidResourceIdError::wildcard(#variable),
-                            );
-                        }
-                        ::aip::Segment::Id(id) if ::uuid::Uuid::is_nil(&id) => {
-                            return ::core::result::Result::Err(
-                                ::aip::resource::InvalidResourceIdError::empty(#variable),
-                            );
-                        }
-                        ::aip::Segment::Id(_) => {}
-                    }
-                },
-            }
-        })
+        .map(|field| quote! { self.#field == ::aip::resource::RESOURCE_WILDCARD })
         .collect();
-
-    // A segment is the wildcard if it reads `-`: a string one is compared, a
-    // typed one says so itself.
-    let wildcard_of = |(segment, field): (&&Segment, &proc_macro2::Ident)| match segment.format {
-        Format::String => quote! { self.#field == ::aip::resource::WILDCARD },
-        Format::Uuid => quote! { self.#field.is_wildcard() },
-    };
-    let wildcards: Vec<TokenStream> = segments.iter().zip(&fields).map(wildcard_of).collect();
     let (any_wildcard, every_wildcard) = if wildcards.is_empty() {
         (quote! { false }, quote! { false })
     } else {
@@ -451,8 +533,10 @@ fn emit_pattern_struct(
         .zip(&fields)
         .filter(|(segment, _)| segment.format == Format::Uuid)
         .map(|(segment, field)| {
-            let variable = Literal::string(&segment.name);
             let accessor = format_ident!("try_{}", field);
+            let wildcard = fail_with(&format!("{}: the wildcard is not an id", segment.name));
+            let unreadable = format!("{}: {{error}}", segment.name);
+            let error = name_error();
             let accessor_doc = doc(&format!(
                 "The `{{{}}}` id. Fails for the wildcard, which is no id.",
                 segment.name,
@@ -462,9 +546,13 @@ fn emit_pattern_struct(
                 ///
                 /// # Errors
                 ///
-                /// [`SegmentError`](::aip::resource::SegmentError) if the segment is the wildcard.
-                pub fn #accessor(&self) -> ::core::result::Result<::uuid::Uuid, ::aip::resource::SegmentError> {
-                    self.#field.into_id(#variable)
+                /// If the segment is the wildcard, or not a UUID.
+                pub fn #accessor(&self) -> ::core::result::Result<::uuid::Uuid, #error> {
+                    if self.#field == ::aip::resource::RESOURCE_WILDCARD {
+                        #wildcard
+                    }
+                    <::uuid::Uuid as ::core::str::FromStr>::from_str(&self.#field)
+                        .map_err(|error| #error::new(::std::format!(#unreadable)))
                 }
             }
         })
@@ -476,11 +564,7 @@ fn emit_pattern_struct(
 
     let resource_type = Literal::string(&resource.resource_type);
     let pattern_literal = Literal::string(&pattern.source);
-    let domain = Literal::string(&resource.domain);
-    let invalid = Literal::string(&format!(
-        "protoc-gen-rust-aip emitted an invalid pattern for {}",
-        resource.resource_type,
-    ));
+    let error = name_error();
 
     let struct_doc = match enclosing {
         Some(enclosing) => doc(&format!(
@@ -549,38 +633,24 @@ fn emit_pattern_struct(
             /// The pattern this name is parsed against and rendered from.
             pub const PATTERN: &'static str = #pattern_literal;
 
-            /// The pattern, compiled once on first use.
-            ///
-            /// A pattern that does not compile is a codegen bug rather than
-            /// anything a request can provoke, which is what makes `expect`
-            /// right here.
-            fn compiled() -> &'static ::aip::ResourcePattern {
-                static COMPILED: ::std::sync::LazyLock<::aip::ResourcePattern> =
-                    ::std::sync::LazyLock::new(|| {
-                        ::core::str::FromStr::from_str(#pattern_literal).expect(#invalid)
-                    });
-                &COMPILED
-            }
-
             #parse_doc
-            pub fn parse(
-                name: &str,
-            ) -> ::core::result::Result<Self, ::aip::resource::ParseError> {
-                #ids
-                Self::compiled().scan_into(name, #ids_ref)?;
+            pub fn parse(name: &str) -> ::core::result::Result<Self, #error> {
+                #parse_checks
                 ::core::result::Result::Ok(Self { #( #assignments, )* })
             }
 
             #parse_full_doc
-            pub fn parse_full(
-                name: &str,
-            ) -> ::core::result::Result<Self, ::aip::resource::ParseError> {
-                #ids
-                Self::compiled().scan_full_into(name, #domain, #ids_ref)?;
-                ::core::result::Result::Ok(Self { #( #assignments, )* })
+            pub fn parse_full(name: &str) -> ::core::result::Result<Self, #error> {
+                #parse_full
             }
 
             #parent_method
+
+            /// Whether any variable segment is the AIP-159 wildcard.
+            #[must_use]
+            pub fn contains_wildcard(&self) -> bool {
+                #any_wildcard
+            }
 
             /// Whether every variable segment is the AIP-159 wildcard.
             #[must_use]
@@ -594,7 +664,7 @@ fn emit_pattern_struct(
         #display
 
         impl ::core::str::FromStr for #name_type {
-            type Err = ::aip::resource::ParseError;
+            type Err = #error;
 
             fn from_str(name: &str) -> ::core::result::Result<Self, Self::Err> {
                 Self::parse(name)
@@ -610,15 +680,9 @@ fn emit_pattern_struct(
                 Self::PATTERN
             }
 
-            fn validate(
-                &self,
-            ) -> ::core::result::Result<(), ::aip::resource::InvalidResourceIdError> {
+            fn validate(&self) -> ::core::result::Result<(), #error> {
                 #( #checks )*
                 ::core::result::Result::Ok(())
-            }
-
-            fn contains_wildcard(&self) -> bool {
-                #any_wildcard
             }
         }
 
@@ -664,13 +728,9 @@ struct ParentBinding {
     builder: TokenStream,
 }
 
-/// The field initializer that carries `field` over from `self`: a copy for a
-/// `Uuid` segment, a clone for a string one.
-fn carry(segment: &Segment, field: &proc_macro2::Ident) -> TokenStream {
-    match segment.format {
-        Format::String => quote! { #field: ::core::clone::Clone::clone(&self.#field) },
-        Format::Uuid => quote! { #field: self.#field },
-    }
+/// The field initializer that carries `field` over from `self`.
+fn carry(field: &proc_macro2::Ident) -> TokenStream {
+    quote! { #field: ::core::clone::Clone::clone(&self.#field) }
 }
 
 fn emit_parent(
@@ -699,13 +759,8 @@ fn emit_parent(
     let matched = &parent.patterns[index];
     let parent_fields: Vec<proc_macro2::Ident> =
         matched.variables().map(|s| id_field(&s.name)).collect();
-    // The segments the parent carries, read off this resource: a `Uuid` is
-    // `Copy`, so only a string segment is cloned.
-    let carried: Vec<TokenStream> = pattern
-        .variables()
-        .zip(&parent_fields)
-        .map(|(segment, field)| carry(segment, field))
-        .collect();
+    // The segments the parent carries, read off this resource.
+    let carried: Vec<TokenStream> = parent_fields.iter().map(carry).collect();
     let construct = quote! { #variant_path { #( #carried, )* } };
     let construct = if parent.is_multi_pattern() {
         quote! { ::core::convert::From::from(#construct) }
@@ -740,17 +795,13 @@ fn emit_parent(
             Format::Uuid => quote! { #field: ::uuid::Uuid },
         })
         .collect();
-    let from_parent: Vec<TokenStream> = matched
-        .variables()
-        .zip(&parent_fields)
-        .map(|(segment, field)| carry(segment, field))
-        .collect();
+    let from_parent: Vec<TokenStream> = parent_fields.iter().map(carry).collect();
     let from_args: Vec<TokenStream> = own
         .iter()
         .zip(&own_fields)
         .map(|(segment, field)| match segment.format {
             Format::String => quote! { #field: ::core::convert::Into::into(#field) },
-            Format::Uuid => quote! { #field: ::aip::Segment::Id(#field) },
+            Format::Uuid => quote! { #field: ::std::string::ToString::to_string(&#field) },
         })
         .collect();
 
@@ -781,7 +832,6 @@ fn emit_parent(
 fn emit_message_accessors(
     resource: &Resource,
     name_type: &proc_macro2::Ident,
-    error: &TokenStream,
     views: bool,
 ) -> TokenStream {
     let Some(binding) = &resource.message else {
@@ -821,18 +871,29 @@ fn emit_message_accessors(
             #parse_doc
             pub fn parse_name(
                 &self,
-            ) -> ::core::result::Result<#name_type, ::aip::FieldError<#error>> {
+            ) -> ::core::result::Result<#name_type, ::aip::FieldError> {
                 #name_type::parse(#value).map_err(|error| ::aip::FieldError::new(#at, error))
             }
 
             #parse_full_doc
             pub fn parse_full_name(
                 &self,
-            ) -> ::core::result::Result<#name_type, ::aip::FieldError<#error>> {
+            ) -> ::core::result::Result<#name_type, ::aip::FieldError> {
                 #name_type::parse_full(#value).map_err(|error| ::aip::FieldError::new(#at, error))
             }
         },
     )
+}
+
+/// Whether a reference is the `name` or `parent` of a request: the resource
+/// name a standard method (AIP-131 to AIP-135) acts on.
+///
+/// That name is a key -- a wildcard or a non-canonical id is no name to act
+/// on -- so its parse also validates it, unless the request is one of
+/// [`wildcard_requests`](Options::wildcard_requests). Any other reference may
+/// carry a wildcard.
+fn is_request_name(reference: &Reference) -> bool {
+    matches!(reference.field_name.as_str(), "name" | "parent")
 }
 
 /// The accessor for a `google.api.resource_reference` field: the referring
@@ -841,7 +902,7 @@ fn emit_reference(
     reference: &Reference,
     package: &str,
     registry: &Registry,
-    views: bool,
+    options: &Options,
 ) -> TokenStream {
     let resource = &registry.resources[reference.resource];
     let message: TokenStream = reference
@@ -851,33 +912,86 @@ fn emit_reference(
     let field = buffa_codegen::idents::make_field_ident(&reference.field_name);
     let method = format_ident!("parse_{}", reference.field_name);
     let name_path = type_path(package, resource, &resource.name_type());
-    let error = if resource.is_multi_pattern() {
-        quote! { ::aip::resource::NoPatternError }
-    } else {
-        quote! { ::aip::resource::ParseError }
-    };
     let value = if reference.field_optional {
         quote! { self.#field.as_deref().unwrap_or_default() }
     } else {
         quote! { &self.#field }
     };
+
+    let listed = options.wildcard_requests.contains(&reference.proto_name);
+    let validate = is_request_name(reference) && !listed;
+    // A listed request's parents may be the wildcard, but not the resource its
+    // `name` names, which is then no resource at all: its own segment, the last
+    // variable one, may not. Only for a resource of one pattern, since a name
+    // of several is an enum, with no segment to read.
+    let own = if listed && reference.field_name == "name" && !resource.is_multi_pattern() {
+        resource.patterns[0].variables().last()
+    } else {
+        None
+    };
+
+    let at = field_at(&reference.field_name, reference.field_number);
+    let error = name_error();
+    let validated = validate.then(|| {
+        quote! { ::aip::ResourceName::validate(&parsed).map_err(fail)?; }
+    });
+    let owned = own.map(|segment| {
+        let own_field = id_field(&segment.name);
+        match segment.format {
+            // The id accessor fails for the wildcard, which is no id.
+            Format::Uuid => {
+                let accessor = format_ident!("try_{own_field}");
+                quote! { parsed.#accessor().map_err(fail)?; }
+            }
+            Format::String => {
+                let refused = format!("{}: the wildcard is not an id", segment.name);
+                quote! {
+                    if parsed.#own_field == ::aip::resource::RESOURCE_WILDCARD {
+                        return ::core::result::Result::Err(fail(#error::new(#refused)));
+                    }
+                }
+            }
+        }
+    });
+    let checked = validated.is_some() || owned.is_some();
+    // A reference that only parses has nothing to bind a name for.
+    let body = if checked {
+        quote! {
+            let fail = |error: #error| ::aip::FieldError::new(#at, error);
+            let parsed = #name_path::parse(#value).map_err(fail)?;
+            #validated
+            #owned
+            ::core::result::Result::Ok(parsed)
+        }
+    } else {
+        quote! {
+            #name_path::parse(#value).map_err(|error| ::aip::FieldError::new(#at, error))
+        }
+    };
+
+    let held = if validate {
+        " and validates it, so a wildcard is no name"
+    } else if own.is_some() {
+        ". Its parents may be the wildcard, but not the resource itself"
+    } else {
+        ""
+    };
     let method_doc = doc(&format!(
-        "Parses `{}` as the `{}` resource name it references.\n\n\
+        "Parses `{}` as the `{}` resource name it references{held}.\n\n\
          # Errors\n\n\
          If the field does not hold a name of that resource; the \
          [`FieldError`](::aip::FieldError) names `{}` for it.",
         reference.field_name, resource.resource_type, reference.field_name,
     ));
-    let at = field_at(&reference.field_name, reference.field_number);
     impl_for(
         &message,
-        views,
+        options.views,
         &quote! {
             #method_doc
             pub fn #method(
                 &self,
-            ) -> ::core::result::Result<#name_path, ::aip::FieldError<#error>> {
-                #name_path::parse(#value).map_err(|error| ::aip::FieldError::new(#at, error))
+            ) -> ::core::result::Result<#name_path, ::aip::FieldError> {
+                #body
             }
         },
     )
@@ -962,19 +1076,6 @@ fn type_path(from_package: &str, resource: &Resource, type_name: &str) -> TokenS
             quote! { #segment }
         });
     quote! { #( #ups :: )* #( #downs :: )* #ident }
-}
-
-/// The Rust type a variable segment is stored as.
-///
-/// A `Uuid` costs the consumer a `uuid` dependency, but only a schema that
-/// annotates an ID as UUID4 pays it -- nothing else in the output names the
-/// crate. A typed segment is a [`Segment`](::aip::Segment) of it, so it can be
-/// the AIP-159 wildcard as aip-go's string segments can.
-fn segment_type(format: Format) -> TokenStream {
-    match format {
-        Format::String => quote! { ::std::string::String },
-        Format::Uuid => quote! { ::aip::Segment<::uuid::Uuid> },
-    }
 }
 
 /// The struct field for a variable segment: `{publisher}` becomes
@@ -1086,7 +1187,7 @@ fn emit_create_id(
     } else {
         quote! { &self.#ident }
     };
-    let name_type = format_ident!("{}", resource.name_type());
+    let name_error = name_error();
     let field_name = Literal::string(&field.name);
     let at = field_at(&field.name, u32::try_from(field.number).unwrap_or_default());
 
@@ -1106,8 +1207,8 @@ fn emit_create_id(
          # Errors\n\n\
          If the caller proposed an ID that is not a canonical lowercase UUID, \
          or is the nil UUID, which no `{}` validates with. Reported as a \
-         [`ParseError`](::aip::resource::ParseError) naming the field -- \
-         `parse {} \"abc\": ...`, as aip-go's accessor reports it -- in a \
+         [`ResourceNameError`](::aip::resource::ResourceNameError) naming the \
+         field -- `parse {} \"abc\": ...`, as aip-go's accessor reports it -- in a \
          [`FieldError`](::aip::FieldError) that names it too, so a call site \
          handles one error type for an id and a name alike.",
         resource.resource_type,
@@ -1128,39 +1229,34 @@ fn emit_create_id(
                 &self,
             ) -> ::core::result::Result<
                 ::core::option::Option<::uuid::Uuid>,
-                ::aip::FieldError<::aip::resource::ParseError>,
+                ::aip::FieldError,
             > {
                 let id: &str = #value;
                 if id.is_empty() {
                     return ::core::result::Result::Ok(::core::option::Option::None);
                 }
-                let parsed = match <::uuid::Uuid as ::core::str::FromStr>::from_str(id) {
-                    // The nil UUID parses, but no name built from it validates.
-                    ::core::result::Result::Ok(value) if value.is_nil() => {
-                        ::core::result::Result::Err(#name_type::compiled().invalid_id(
-                            #field_name,
-                            id,
-                            "the nil UUID is not an ID",
-                        ))
-                    }
-                    // As a name's segment: the form it formats back to, only.
-                    ::core::result::Result::Ok(value)
-                        if &*value.hyphenated().encode_lower(&mut ::uuid::Uuid::encode_buffer()) != id =>
-                    {
-                        ::core::result::Result::Err(#name_type::compiled().invalid_id(
-                            #field_name,
-                            id,
-                            "not a canonical lowercase UUID",
-                        ))
-                    }
+                let fail = |reason: &dyn ::core::fmt::Display| {
+                    ::aip::FieldError::new(
+                        #at,
+                        #name_error::new(::std::format!("parse {} {id:?}: {reason}", #field_name)),
+                    )
+                };
+                match <::uuid::Uuid as ::core::str::FromStr>::from_str(id) {
                     ::core::result::Result::Ok(value) => {
+                        // As a name's segment: the form it formats back to, only.
+                        if ::std::string::ToString::to_string(&value) != id {
+                            return ::core::result::Result::Err(fail(&"not a canonical lowercase UUID"));
+                        }
+                        // The nil UUID parses, but no name built from it validates.
+                        if value.is_nil() {
+                            return ::core::result::Result::Err(fail(&"the nil UUID is not an ID"));
+                        }
                         ::core::result::Result::Ok(::core::option::Option::Some(value))
                     }
-                    ::core::result::Result::Err(error) => ::core::result::Result::Err(
-                        #name_type::compiled().invalid_id(#field_name, id, error),
-                    ),
-                };
-                parsed.map_err(|error| ::aip::FieldError::new(#at, error))
+                    ::core::result::Result::Err(error) => {
+                        ::core::result::Result::Err(fail(&error))
+                    }
+                }
             }
         },
     ))
