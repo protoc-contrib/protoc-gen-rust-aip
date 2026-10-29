@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.12.0...v0.13.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* the generated code needs aip-rs 0.12. `parse*` fail with `ResourceNameError` rather than `ParseError`/`NoPatternError`, a typed segment is a `String` rather than an `aip::Segment<Uuid>`, `FieldError` is no longer generic, and the `parse_name` and `parse_parent` of a request refuse a wildcard unless the request is in `wildcard_requests`.
+
+### Features
+
+* a typed segment is an aip::Segment, so a name can hold the wildcard as aip-go's can ([03f5817](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/03f58171f796cb33e2e88ab010829971319fe5da))
+* emit the resource name parsers inline, as protoc-gen-go-aip does, against aip-rs 0.12 ([#78](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/78)) ([b60aa63](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/b60aa63ed9d8baa652d8e4d94eba3e800404c6fe))
+
 ## [0.12.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.11.0...v0.12.0) (2026-10-19)
 
 
