@@ -79,13 +79,20 @@ fn parse_options(parameter: &str) -> Result<emit::Options> {
                 value.clone_into(&mut options.proto_module);
                 continue;
             }
+            "wildcard_requests" => {
+                if value.is_empty() {
+                    bail!("option wildcard_requests: no request name");
+                }
+                options.wildcard_requests.insert(value.to_owned());
+                continue;
+            }
             "packaging" => &mut options.packaging,
             "views" => &mut options.views,
             "allow_unresolved_refs" => &mut options.allow_unresolved_refs,
             "connect" => &mut options.connect,
             _ => bail!(
                 "unknown option {key:?}: want proto_module, packaging, views, \
-                 allow_unresolved_refs or connect"
+                 allow_unresolved_refs, connect or wildcard_requests"
             ),
         };
         *flag = value
@@ -158,6 +165,31 @@ mod tests {
         assert!(options("").connect);
         assert!(options("connect=true").connect);
         assert!(!options("connect=false").connect);
+    }
+
+    #[test]
+    fn every_request_is_strict_unless_listed() {
+        assert!(options("").wildcard_requests.is_empty());
+    }
+
+    #[test]
+    fn wildcard_requests_repeats_once_per_request() {
+        let options = options(
+            "wildcard_requests=library.v1.ListBooksRequest,views=true,\
+             wildcard_requests=library.v1.GetBookRequest",
+        );
+        assert_eq!(
+            options.wildcard_requests.iter().collect::<Vec<_>>(),
+            ["library.v1.GetBookRequest", "library.v1.ListBooksRequest"]
+        );
+    }
+
+    #[test]
+    fn a_wildcard_request_needs_a_name() {
+        assert_eq!(
+            refused("wildcard_requests="),
+            "option wildcard_requests: no request name"
+        );
     }
 
     #[test]

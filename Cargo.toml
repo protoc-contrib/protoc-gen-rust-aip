@@ -41,12 +41,6 @@ quote = "1"
 syn = { version = "3", features = ["full"] }
 prettyplease = "0.3"
 anyhow = "1"
-# The runtime the generated code calls into, used here for one thing: compiling
-# each pattern the way the generated code will at startup, so a pattern the
-# runtime rejects fails `buf generate` instead of panicking in a consumer.
-# Without default features: the plugin needs none of the `connect` runtime the
-# generated code calls into.
-aip = { package = "aip-rs", version = "0.7", default-features = false }
 
 [dev-dependencies]
 # Regenerates src/generated, to check it is current; see tests/generated.rs.

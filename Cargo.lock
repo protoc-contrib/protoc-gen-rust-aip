@@ -15,7 +15,7 @@ dependencies = [
 name = "aip-fixture"
 version = "0.12.0"
 dependencies = [
- "aip-rs 0.11.0",
+ "aip-rs",
  "anyhow",
  "buffa",
  "buffa-build",
@@ -30,17 +30,8 @@ dependencies = [
 
 [[package]]
 name = "aip-rs"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6ca35898c93b231dd2b0add789bc60a075d14a71a26f1ab2b36c1a0996e1140"
-dependencies = [
- "buffa-types",
-]
-
-[[package]]
-name = "aip-rs"
-version = "0.11.0"
-source = "git+https://github.com/protoc-contrib/aip-rs?rev=10964971e2a2c865ec419f5dc07dd05b687550e4#10964971e2a2c865ec419f5dc07dd05b687550e4"
+version = "0.12.0"
+source = "git+https://github.com/protoc-contrib/aip-rs?rev=24157744fba28b7114428490bdef7d0bfd62dbf1#24157744fba28b7114428490bdef7d0bfd62dbf1"
 dependencies = [
  "base64",
  "buffa",
@@ -915,7 +906,6 @@ dependencies = [
 name = "protoc-gen-rust-aip"
 version = "0.12.0"
 dependencies = [
- "aip-rs 0.7.0",
  "anyhow",
  "buffa",
  "buffa-build",

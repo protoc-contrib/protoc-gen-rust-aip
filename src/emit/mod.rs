@@ -104,6 +104,18 @@ pub struct Options {
     /// for a consumer that does not serve Connect, or builds aip-rs without
     /// default features.
     pub connect: bool,
+
+    /// The fully-qualified proto names of the requests whose `name` or `parent`
+    /// may be an AIP-159 wildcard, e.g. `library.v1.ListBooksRequest`.
+    ///
+    /// The `parse_name` or `parse_parent` of any other request also validates
+    /// the name it parses, so a wildcard fails it: a name a request acts on
+    /// is a key, and `-` is no key. For a listed request they only parse,
+    /// except that a `name` still refuses the wildcard in the resource's own
+    /// segment -- AIP-159 lets a parent be `-`, but a resource that is none is
+    /// no resource. As protoc-gen-go-aip's option of the same name; repeat it
+    /// once per request.
+    pub wildcard_requests: BTreeSet<String>,
 }
 
 impl Default for Options {
@@ -114,6 +126,7 @@ impl Default for Options {
             views: false,
             allow_unresolved_refs: false,
             connect: true,
+            wildcard_requests: BTreeSet::new(),
         }
     }
 }
@@ -159,7 +172,7 @@ pub fn render(
             .ok_or_else(|| anyhow!("{name} is scheduled for generation but not in the request"))?;
         let package = descriptor.package.clone().unwrap_or_default();
 
-        let resources = resource::emit_file(name, &package, registry, options.views);
+        let resources = resource::emit_file(name, &package, registry, options);
         let creates = resource::emit_create_ids(name, index, registry, options.views);
         let behaviors = field_behavior_impls(
             name,

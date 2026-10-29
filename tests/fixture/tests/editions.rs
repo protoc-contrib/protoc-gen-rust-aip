@@ -13,7 +13,7 @@ fn reads_an_optional_resource_name() {
         name: Some(format!("gadgets/{ID}")),
         ..Default::default()
     };
-    assert_eq!(gadget.parse_name().unwrap().gadget_id.to_string(), ID);
+    assert_eq!(gadget.parse_name().unwrap().gadget_id, ID);
     // Unset reads as empty, which is not a name.
     assert!(Gadget::default().parse_name().is_err());
 }

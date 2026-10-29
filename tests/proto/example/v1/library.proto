@@ -58,6 +58,35 @@ message CreateBookRequest {
   string book_id = 3;
 }
 
+// A request's `name` is the key it acts on, so its parse also validates it: a
+// wildcard is no name. A multi-pattern resource and a single-pattern one.
+message GetBookRequest {
+  string name = 1 [(google.api.resource_reference) = { type: "example.com/Book" }];
+}
+
+message GetPublisherRequest {
+  string name = 1 [(google.api.resource_reference) = { type: "example.com/Publisher" }];
+}
+
+// Listed in `wildcard_requests`: a name of a publisher's own may not be the
+// wildcard, which is no publisher, but nothing is above a publisher to read
+// across.
+message DeletePublisherRequest {
+  string name = 1 [(google.api.resource_reference) = { type: "example.com/Publisher" }];
+}
+
+// Listed in `wildcard_requests`, and of a resource of several patterns, whose
+// parsed name is an enum with no own segment to refuse the wildcard in.
+message DeleteBookRequest {
+  string name = 1 [(google.api.resource_reference) = { type: "example.com/Book" }];
+}
+
+// Not the `name` or `parent` of a request: a reference like any other, which
+// may carry a wildcard.
+message Bookmark {
+  string publisher = 1 [(google.api.resource_reference) = { type: "example.com/Publisher" }];
+}
+
 // Neither reference resolves to a pattern, so both are silently skipped.
 message Unresolvable {
   string children = 1 [(google.api.resource_reference) = { child_type: "example.com/Book" }];
