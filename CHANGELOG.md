@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.13.0...v0.14.0) (2026-11-07)
+
+
+### Features
+
+* **ci:** push the Nix build to Cachix, and merge with the App token ([#84](https://github.com/protoc-contrib/protoc-gen-rust-aip/issues/84)) ([93a137d](https://github.com/protoc-contrib/protoc-gen-rust-aip/commit/93a137d3f2c241992c8c27f80ecb53d434257784))
+
 ## [0.13.0](https://github.com/protoc-contrib/protoc-gen-rust-aip/compare/v0.12.0...v0.13.0) (2026-10-29)
 
 
