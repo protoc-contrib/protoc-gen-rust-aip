@@ -66,14 +66,22 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v23
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v15
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
         with:
-          use-flakehub: disabled
-          use-gha-cache: enabled
+          name: ralch
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Only the binary is pushed, below, not everything the build produces.
+          skipPush: true
 
       - name: Build with Nix
         run: nix build .#default --system ${{ matrix.nix_system }}
+
+      - name: Push to Cachix
+        if: github.event_name == 'push'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: cachix push ralch ./result
 
       - name: Prepare Binary
         run: install -m 0755 result/bin/protoc-gen-rust-aip "$BIN_PATH"
