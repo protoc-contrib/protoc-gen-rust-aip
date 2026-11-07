@@ -4,11 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    nix-release-bin = {
-      url = "github:nixos-contrib/nix-release-bin";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-    };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,7 +15,6 @@
       nixpkgs,
       flake-utils,
       rust-overlay,
-      nix-release-bin,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -33,7 +27,7 @@
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         rust-toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        source = pkgs.rustPlatform.buildRustPackage {
+        package = pkgs.rustPlatform.buildRustPackage {
           pname = manifest.name;
           inherit (manifest) version;
           src = pkgs.lib.cleanSource ./.;
@@ -63,17 +57,7 @@
         };
       in
       {
-        packages = {
-          # The latest release binary, where it has one for the system: CI pins
-          # them in the manifest once the release has published them.
-          default = nix-release-bin.lib.mkReleaseBin {
-            inherit pkgs;
-            manifest = ./.github/config/nix-release-bin-manifest.json;
-            pname = manifest.name;
-            fallback = source;
-          };
-          inherit source;
-        };
+        packages.default = package;
 
         devShells.default = pkgs.mkShell {
           inherit (manifest) name;
