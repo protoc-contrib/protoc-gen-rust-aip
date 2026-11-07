@@ -9,17 +9,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Auto-merge waits for the checks the main ruleset requires. It is enabled
+  # with the App token because merges made with GITHUB_TOKEN do not trigger
+  # workflows, so CI and release-please would not run on main. The App key is
+  # both an Actions and a Dependabot secret, as Dependabot-triggered runs only
+  # get Dependabot secrets.
   merge:
     if: contains(github.event.pull_request.labels.*.name, 'auto-merge')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     timeout-minutes: 5
     steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Enable auto-merge
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           gh pr review --approve "$PR_URL" || echo "PR approval skipped or failed."
