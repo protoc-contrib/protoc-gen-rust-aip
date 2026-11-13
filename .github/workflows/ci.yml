@@ -69,7 +69,7 @@ jobs:
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
         with:
-          name: ralch
+          name: nixos-contrib
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           # Only the binary is pushed, below, not everything the build produces.
           skipPush: true
@@ -81,7 +81,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        run: cachix push ralch ./result
+        run: cachix push nixos-contrib ./result
 
       - name: Prepare Binary
         run: install -m 0755 result/bin/protoc-gen-rust-aip "$BIN_PATH"
