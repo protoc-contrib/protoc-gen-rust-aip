@@ -24,22 +24,22 @@ dependencies = [
  "cel",
  "connectrpc",
  "protoc-gen-rust-aip",
- "protovalidate-buffa 0.8.0",
+ "protovalidate-buffa",
  "uuid",
 ]
 
 [[package]]
 name = "aip-rs"
-version = "0.12.0"
-source = "git+https://github.com/protoc-contrib/aip-rs?rev=24157744fba28b7114428490bdef7d0bfd62dbf1#24157744fba28b7114428490bdef7d0bfd62dbf1"
+version = "0.12.1"
+source = "git+https://github.com/protoc-contrib/aip-rs?rev=092c38b4d833f46af664ef9b7b809f6d7e83a833#092c38b4d833f46af664ef9b7b809f6d7e83a833"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "buffa",
  "buffa-protos",
  "buffa-types",
  "connectrpc",
  "futures-util",
- "protovalidate-buffa 0.7.4",
+ "protovalidate-buffa",
  "tracing",
  "uuid",
 ]
@@ -938,28 +938,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
-]
-
-[[package]]
-name = "protovalidate-buffa"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66b97487ae2d6cb867ffd906062f0972d5a60734173f7c611484178c0e409061"
-dependencies = [
- "base64 0.23.1",
- "buffa",
- "buffa-descriptor",
- "chrono",
- "connectrpc",
- "fluent-uri",
- "http",
- "ipnet",
- "percent-encoding",
- "protovalidate-buffa-macros",
- "protovalidate-buffa-protos",
- "regex",
- "ulid",
- "uuid",
 ]
 
 [[package]]
