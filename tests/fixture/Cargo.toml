@@ -22,7 +22,7 @@ buffa-types = "0.9.2"
 # A sibling checkout would be quicker to iterate against, but it makes a
 # standalone clone of this repo unbuildable, which is exactly what this crate
 # exists to prove is not the case.
-aip = { package = "aip-rs", git = "https://github.com/protoc-contrib/aip-rs", rev = "24157744fba28b7114428490bdef7d0bfd62dbf1" }
+aip = { package = "aip-rs", git = "https://github.com/protoc-contrib/aip-rs", rev = "092c38b4d833f46af664ef9b7b809f6d7e83a833" }
 # Only a schema that annotates an ID as UUID4 needs this; the plugin names the
 # crate in generated code exactly when it types a segment as one. Parsing is
 # all it does -- minting an ID is the server's -- so no feature is needed.
@@ -31,12 +31,12 @@ uuid = "1"
 # needs this; the plugin names the crate exactly when it emits a filter
 # environment. The generated code needs no features; `chrono` is for the tests,
 # which build a `Volume` with a `timestamp(...)` and a `duration(...)` in it.
-cel = { version = "0.15", default-features = false, features = ["chrono"] }
+cel = { version = "0.16", default-features = false, features = ["chrono"] }
 # The PROCEDURES table names each unary request as an
 # `aip::connect::PreparedRequest`, which takes protovalidate-buffa's `Validate`.
 # A consumer generates it with protoc-gen-protovalidate-buffa; the fixture
 # writes the few impls its requests need by hand, in src/lib.rs.
-protovalidate-buffa = "0.7.2"
+protovalidate-buffa = "0.8.0"
 
 [dev-dependencies]
 # The error `aip::connect::validate` refuses a request with.
